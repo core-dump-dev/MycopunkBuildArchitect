@@ -6,11 +6,15 @@ namespace MycopunkBuildArchitect
     public static class ArchitectUI
     {
         private static bool _visible;
-        private static Rect _windowRect = new(30, 120, 500, 640);
+        private static Rect _windowRect = new(30, 120, 550, 680);
         private static Vector2 _scroll;
         private static readonly MultiLayoutManager _manager = new();
         private static bool _isWorking;
         private static string _status = "Open gear window, then press Generate.";
+
+        // Новые настройки
+        private static bool _includeOuroboros = true;
+        private static bool _ignoreRotationLocks = true;
 
         public static void ToggleVisibility() => _visible = !_visible;
 
@@ -29,6 +33,11 @@ namespace MycopunkBuildArchitect
             string gearName = "?";
             try { gearName = win?.UpgradablePrefab?.Info?.Name ?? "?"; } catch { }
             GUILayout.Label("Gear: " + gearName);
+            GUILayout.Space(6);
+
+            // Настройки
+            _includeOuroboros = GUILayout.Toggle(_includeOuroboros, " Include Ouroboros upgrades (steals from others)");
+            _ignoreRotationLocks = GUILayout.Toggle(_ignoreRotationLocks, " Ignore rotation level locks (Cheat mode)");
             GUILayout.Space(6);
 
             GUI.enabled = !_isWorking;
@@ -86,7 +95,7 @@ namespace MycopunkBuildArchitect
         {
             yield return null;
             bool done = false;
-            var routine = _manager.GenerateVariants(win, () => done = true);
+            var routine = _manager.GenerateVariants(win, _includeOuroboros, _ignoreRotationLocks, () => done = true);
             while (!done)
             {
                 object? cur = null;
@@ -115,10 +124,9 @@ namespace MycopunkBuildArchitect
             bool result = false;
             IEnumerator? routine = null;
 
-            // try только на создание solver/routine (без yield)
             try
             {
-                var solver = new LayoutSolver(win);
+                var solver = new LayoutSolver(win, _includeOuroboros, _ignoreRotationLocks);
                 routine = solver.Apply(v, r => result = r);
             }
             catch (System.Exception ex)
@@ -126,7 +134,6 @@ namespace MycopunkBuildArchitect
                 BuildArchitectPlugin.Log.LogError("Apply init: " + ex);
             }
 
-            // итерация — вне try, чтобы можно было yield
             if (routine != null)
             {
                 while (true)
@@ -148,7 +155,7 @@ namespace MycopunkBuildArchitect
                 }
             }
 
-            _status = result ? ("Applied " + v.Name) : "Apply failed.";
+            _status = result ? ("Applied " + v.Name + $". {v.PlacedCount}/{v.TotalCount} placed.") : "Apply failed.";
             _isWorking = false;
         }
     }

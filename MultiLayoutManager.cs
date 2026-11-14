@@ -6,14 +6,14 @@ namespace MycopunkBuildArchitect
 {
     public class MultiLayoutManager
     {
-        public static readonly string[] Strategies = { "Large first", "Small first", "Rarity first", "Random" };
+        public static readonly string[] Strategies = { "Expanders first", "Large first", "Small first", "Rarity first", "Random" };
         public List<LayoutVariant> FoundVariants { get; } = new();
 
-        public IEnumerator GenerateVariants(GearDetailsWindow window, Action onDone)
+        public IEnumerator GenerateVariants(GearDetailsWindow window, bool includeOuroboros, bool ignoreRotationLocks, Action onDone)
         {
             FoundVariants.Clear();
             LayoutSolver solver;
-            try { solver = new LayoutSolver(window); }
+            try { solver = new LayoutSolver(window, includeOuroboros, ignoreRotationLocks); }
             catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Solver init failed: " + ex); onDone(); yield break; }
 
             var candidates = solver.CollectCandidates();
