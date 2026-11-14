@@ -1,43 +1,56 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
-using UnityEngine;
 
 namespace MycopunkBuildArchitect
 {
     public class MultiLayoutManager
     {
-        public static readonly string[] Strategies =
-        {
-            "Large first",
-            "Small first",
-            "Random",
-        };
+        public static readonly string[] Strategies = { "Large first", "Small first", "Rarity first", "Random" };
+        public List<LayoutVariant> FoundVariants { get; } = new();
 
-        public List<LayoutVariant> FoundVariants { get; } = new List<LayoutVariant>();
-
-        public IEnumerator GenerateVariants(object window, object gear, List<object> upgrades)
+        public IEnumerator GenerateVariants(GearDetailsWindow window, Action onDone)
         {
             FoundVariants.Clear();
-            if (window == null || upgrades == null || upgrades.Count == 0)
-                yield break;
+            LayoutSolver solver;
+            try { solver = new LayoutSolver(window); }
+            catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Solver init failed: " + ex); onDone(); yield break; }
+
+            var candidates = solver.CollectCandidates();
+            var picked = solver.PickForLayout(candidates);
+            if (picked.Count == 0)
+            {
+                BuildArchitectPlugin.Log.LogWarning("No candidate upgrades found.");
+                onDone(); yield break;
+            }
 
             foreach (var strategy in Strategies)
             {
                 LayoutVariant? result = null;
-                var solver = new LayoutSolver(window, gear, upgrades);
-                var routine = solver.TrySolve(strategy, r => result = r);
-                while (routine.MoveNext())
-                    yield return routine.Current;
+                IEnumerator routine;
+                try { routine = solver.Solve(strategy, picked, v => result = v); }
+                catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Solve " + strategy + ": " + ex); continue; }
+
+                while (true)
+                {
+                    object? current = null;
+                    bool has;
+                    try { has = routine.MoveNext(); if (has) current = routine.Current; }
+                    catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Solve step: " + ex); break; }
+                    if (!has) break;
+                    yield return current;
+                }
 
                 if (result != null)
                 {
                     result.Name = $"Layout {FoundVariants.Count + 1}";
                     FoundVariants.Add(result);
-                    yield return null;
                 }
+                yield return null;
             }
 
-            BuildArchitectPlugin.Log.LogInfo($"Generated {FoundVariants.Count} layout variant(s).");
+            BuildArchitectPlugin.Log.LogInfo($"Generated {FoundVariants.Count} layout(s).");
+            onDone();
         }
     }
 }
