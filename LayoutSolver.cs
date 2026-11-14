@@ -5,9 +5,14 @@ using System.Linq;
 
 namespace MycopunkBuildArchitect
 {
-    /// <summary>
-    /// Представляет один найденный вариант компоновки.
-    /// </summary>
+    public class PlacedUpgrade
+    {
+        public string DisplayName = "";
+        public int X;
+        public int Y;
+        public int Rotation;
+    }
+
     public class LayoutVariant
     {
         public string Name = "Variant";
@@ -17,16 +22,8 @@ namespace MycopunkBuildArchitect
         public override string ToString() => $"{Name} [{CellCount} cells]";
     }
 
-    public class PlacedUpgrade
-    {
-        public string DisplayName = "";
-        public int X;
-        public int Y;
-        public int Rotation;
-    }
-
     /// <summary>
-    /// Скелет решателя. Внутренности нужно наполнить на основе декомпиляции GridSolverPlus.
+    /// Скелет решателя.
     /// </summary>
     public class LayoutSolver
     {
@@ -41,23 +38,21 @@ namespace MycopunkBuildArchitect
             _upgrades = upgrades;
         }
 
-        /// <summary>
-        /// Запускает поиск. Возвращает найденный вариант или null.
-        /// Стратегия влияет на порядок сортировки улучшений.
-        /// </summary>
         public IEnumerator TrySolve(string strategy, Action<LayoutVariant?> onComplete)
         {
-            // TODO: здесь должно быть:
-            //   1. Получить ModuleEquipSlots из _window
-            //   2. Получить HexMap из _equipSlots
-            //   3. Отсортировать _upgrades в соответствии со strategy
-            //   4. Рекурсивно перебрать позиции/повороты (backtracking)
-            //   5. Сохранить результат в LayoutVariant
-            //
-            // Пока — заглушка: выдаём «фейковый» вариант, чтобы можно было
-            // проверить UI и общую архитектуру. Это НЕ размещает ничего в игре.
+            // =========================================================================
+            // TODO: заменить на настоящий backtracking.
+            // Сейчас — заглушка, чтобы можно было проверить UI и архитектуру.
+            // Шаги для реальной реализации:
+            //   1. Достать ModuleEquipSlots из _window.
+            //   2. Достать HexMap из _equipSlots.
+            //   3. Упорядочить _upgrades согласно strategy.
+            //   4. Перебрать позиции и повороты; при успехе вызвать
+            //      _equipSlots.EquipModule(upgradeInstance, x, y, rotation).
+            //   5. Собрать LayoutVariant из результатов.
+            // =========================================================================
 
-            yield return null; // дать кадру прокрутиться
+            yield return null;
 
             if (_upgrades == null || _upgrades.Count == 0)
             {
@@ -69,15 +64,18 @@ namespace MycopunkBuildArchitect
             {
                 Name = "Variant (" + strategy + ")",
                 Strategy = strategy,
-                CellCount = _upgrades.Count, // для примера
-                Upgrades = _upgrades.Select((u, i) => new PlacedUpgrade
-                {
-                    DisplayName = u?.ToString() ?? "Unknown",
-                    X = i % 4,
-                    Y = i / 4,
-                    Rotation = 0,
-                }).ToList()
+                CellCount = _upgrades.Count,
+                Upgrades = _upgrades
+                    .Select((u, i) => new PlacedUpgrade
+                    {
+                        DisplayName = u?.ToString() ?? "Unknown",
+                        X = i % 4,
+                        Y = i / 4,
+                        Rotation = 0,
+                    })
+                    .ToList()
             };
+
             onComplete(fake);
         }
     }

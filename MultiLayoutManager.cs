@@ -1,13 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 
 namespace MycopunkBuildArchitect
 {
-    /// <summary>
-    /// Оркестратор: запускает LayoutSolver с разными стратегиями и собирает варианты.
-    /// </summary>
     public class MultiLayoutManager
     {
         public static readonly string[] Strategies =
@@ -37,7 +33,7 @@ namespace MycopunkBuildArchitect
                 {
                     result.Name = $"Layout {FoundVariants.Count + 1}";
                     FoundVariants.Add(result);
-                    yield return null; // пауза между стратегиями
+                    yield return null;
                 }
             }
 

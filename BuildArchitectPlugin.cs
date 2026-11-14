@@ -83,5 +83,10 @@ namespace MycopunkBuildArchitect
             if (keyboard != null && keyboard[Key.F7].wasPressedThisFrame)
                 ArchitectUI.ToggleVisibility();
         }
+
+        private void OnGUI()
+        {
+            ArchitectUI.DrawIfVisible();
+        }
     }
 }

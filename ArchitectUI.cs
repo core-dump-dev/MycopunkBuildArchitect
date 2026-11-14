@@ -7,12 +7,12 @@ namespace MycopunkBuildArchitect
     public static class ArchitectUI
     {
         private static bool _visible;
-        private static Rect _windowRect = new Rect(30, 120, 440, 520);
+        private static Rect _windowRect = new Rect(30, 120, 440, 540);
         private static Vector2 _scroll;
 
-        private static MultiLayoutManager _manager = new MultiLayoutManager();
+        private static readonly MultiLayoutManager _manager = new MultiLayoutManager();
         private static bool _isWorking;
-        private static string _status = "Open the gear upgrade window, then press Generate.";
+        private static string _status = "Open the gear window, then press Generate.";
 
         public static void ToggleVisibility() => _visible = !_visible;
 
@@ -47,7 +47,7 @@ namespace MycopunkBuildArchitect
 
             GUILayout.Space(8);
             GUILayout.Label("Variants:");
-            _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.Height(340));
+            _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.Height(360));
 
             if (_manager.FoundVariants.Count == 0)
                 GUILayout.Label("(none yet — press Generate)");
@@ -55,13 +55,13 @@ namespace MycopunkBuildArchitect
             foreach (var variant in _manager.FoundVariants)
             {
                 GUILayout.BeginVertical("box");
-                GUILayout.Label($"{variant.Name} — strategy: {variant.Strategy} — {variant.CellCount} cells");
+                GUILayout.Label($"{variant.Name} — {variant.Strategy} — {variant.CellCount} cells");
                 foreach (var up in variant.Upgrades)
                     GUILayout.Label("  • " + up.DisplayName);
 
                 if (GUILayout.Button("Apply", GUILayout.Height(26)))
                 {
-                    // TODO: реальное размещение в игре (пока — просто сообщение)
+                    // TODO: реальное применение (пока заглушка).
                     _status = "Apply is not implemented yet (solver is stub).";
                 }
                 GUILayout.EndVertical();
@@ -83,8 +83,13 @@ namespace MycopunkBuildArchitect
             var plugin = BuildArchitectPlugin.Instance;
             if (plugin == null) yield break;
 
-            // TODO: заменить на реальное извлечение списка улучшений из окна
-            var upgrades = new List<object> { "Placeholder A", "Placeholder B", "Placeholder C" };
+            // TODO: заменить на реальное извлечение из окна снаряжения.
+            var upgrades = new List<object>
+            {
+                "Placeholder Upgrade A",
+                "Placeholder Upgrade B",
+                "Placeholder Upgrade C",
+            };
 
             var routine = _manager.GenerateVariants(plugin.CurrentUpgradeWindow, plugin.CurrentGear, upgrades);
             while (routine.MoveNext())
