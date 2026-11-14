@@ -131,8 +131,14 @@ namespace MycopunkBuildArchitect
                 try { pattern = upg.GetPattern(); } catch { missing.Add(SafeName(upg) + " (no pattern)"); continue; }
                 if (pattern == null) { missing.Add(SafeName(upg) + " (null pattern)"); continue; }
 
+                // Уважаем игровую блокировку поворотов по редкости
+                bool canRotate;
+                try { canRotate = PlayerData.Instance.CanRotateUpgrade(upg.Upgrade.Rarity); }
+                catch { canRotate = false; }
+                int maxRot = canRotate ? 6 : 1;
+
                 bool did = false;
-                for (int rot = 0; rot < 6 && !did; rot++)
+                for (int rot = 0; rot < maxRot && !did; rot++)
                 {
                     HexMap rotPattern;
                     try { rotPattern = pattern.GetModifiedMap(rot); } catch { continue; }
@@ -170,7 +176,17 @@ namespace MycopunkBuildArchitect
                         }
                     }
                 }
-                if (!did) missing.Add(SafeName(upg) + " (no fit)");
+
+                if (!did)
+                {
+                    bool wouldFitRotated = false;
+                    if (!canRotate)
+                    {
+                        for (int r = 1; r < 6 && !wouldFitRotated; r++)
+                            if (WouldFitWithRotation(pattern, r)) wouldFitRotated = true;
+                    }
+                    missing.Add(SafeName(upg) + (wouldFitRotated ? " (needs rotation unlock)" : " (no fit)"));
+                }
                 yield return null;
             }
 
@@ -228,6 +244,30 @@ namespace MycopunkBuildArchitect
                 if (_hexMap[x, y].enabled) return false;
             }
             return true;
+        }
+
+        private bool WouldFitWithRotation(HexMap pattern, int rotation)
+        {
+            HexMap rotPattern;
+            try { rotPattern = pattern.GetModifiedMap(rotation); } catch { return false; }
+            if (rotPattern == null) return false;
+
+            for (int y = 0; y < _hexMap.Height; y++)
+            {
+                for (int x = 0; x < _hexMap.Width; x++)
+                {
+                    int centerX = rotPattern.Width / 2;
+                    int offsetX = x - centerX;
+                    int sumY = 0, count = 0;
+                    for (int i = 0; i < rotPattern.Height; i++)
+                        if (rotPattern[centerX, i].enabled) { sumY += i; count++; }
+                    int offsetY = count == 0 ? (y - rotPattern.Height / 2) : (y - sumY / count);
+                    if (centerX % 2 == 1) offsetY--;
+
+                    if (CanFit(rotPattern, offsetX, offsetY)) return true;
+                }
+            }
+            return false;
         }
 
         private bool HasStackingConflict(UpgradeInstance upgrade)
