@@ -43,8 +43,6 @@ namespace MycopunkBuildArchitect
         private static readonly FieldInfo EquipSlotsField =
             typeof(GearDetailsWindow).GetField("equipSlots", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-        private static bool _dumpedUpgradeFields;
-
         private readonly GearDetailsWindow _window;
         private readonly ModuleEquipSlots _equipSlots;
         private readonly HexMap _hexMap;
@@ -113,7 +111,7 @@ namespace MycopunkBuildArchitect
             var groups = new Dictionary<string, List<UpgradeInstance>>();
             foreach (var u in all)
             {
-                string key;
+                string key = "";
                 try { key = GetSourceId(u).ToString(); }
                 catch { key = u.Upgrade.Name; }
                 if (!groups.TryGetValue(key, out var lst)) { lst = new(); groups[key] = lst; }
@@ -475,132 +473,56 @@ namespace MycopunkBuildArchitect
             {
                 var upg = u.Upgrade;
                 if (upg == null) return "";
-                
-                if (!_dumpedUpgradeFields) DumpUpgradeFields(upg);
-                
+
                 var t = upg.GetType();
-                var it = u.GetType();
+                string flavor = "";
+                string stats = "";
 
-                // 1. Ищем метод, который возвращает строку со статами
-                foreach (var name in new[] { "GetStatsDescription", "GetFormattedStats", "GetTooltipStats", "GetStatsString", "GetPropertyString" })
+                // 1. Получаем флейвор-текст (Description)
+                var descProp = t.GetProperty("Description", BindingFlags.Public | BindingFlags.Instance);
+                if (descProp != null && descProp.PropertyType == typeof(string))
                 {
-                    var m = t.GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, new[] { it }, null) ??
-                            t.GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
-                    if (m != null && m.ReturnType == typeof(string))
-                    {
-                        var v = m.Invoke(upg, m.GetParameters().Length == 0 ? null : new object[] { u }) as string;
-                        if (!string.IsNullOrWhiteSpace(v)) return StripTags(v);
-                    }
+                    flavor = descProp.GetValue(upg) as string ?? "";
                 }
 
-                // 2. Пытаемся собрать статы из массива Properties
-                var propsProp = t.GetProperty("Properties", BindingFlags.Public | BindingFlags.Instance)
-                    ?? t.GetField("Properties", BindingFlags.Public | BindingFlags.Instance) as MemberInfo;
-                System.Collections.IEnumerable? props = null;
-                if (propsProp is PropertyInfo pp) props = pp.GetValue(upg) as System.Collections.IEnumerable;
-                else if (propsProp is FieldInfo pf) props = pf.GetValue(upg) as System.Collections.IEnumerable;
-
-                if (props != null)
+                // 2. Получаем статы через метод GetStatList(Int32, UpgradeInstance)
+                var statMethod = t.GetMethod("GetStatList", BindingFlags.Public | BindingFlags.Instance);
+                if (statMethod != null && statMethod.ReturnType == typeof(string))
                 {
-                    var sb = new StringBuilder();
-                    foreach (var prop in props)
+                    try
                     {
-                        if (prop == null) continue;
-                        var pt = prop.GetType();
-                        string? nameStr = null;
-                        string? valStr = null;
-
-                        // Имя характеристики (напр. "ЗДОРОВЬЕ")
-                        foreach (var nm in new[] { "Name", "StatName", "Title" })
+                        // Метод принимает (Seed, UpgradeInstance)
+                        var parameters = statMethod.GetParameters();
+                        if (parameters.Length == 2 && parameters[0].ParameterType == typeof(int) && parameters[1].ParameterType == typeof(UpgradeInstance))
                         {
-                            var p = pt.GetProperty(nm, BindingFlags.Public | BindingFlags.Instance);
-                            if (p != null && p.PropertyType == typeof(string)) { nameStr = p.GetValue(prop) as string; break; }
-                            var f = pt.GetField(nm, BindingFlags.Public | BindingFlags.Instance);
-                            if (f != null && f.FieldType == typeof(string)) { nameStr = f.GetValue(prop) as string; break; }
+                            stats = statMethod.Invoke(upg, new object[] { u.Seed, u }) as string ?? "";
                         }
-
-                        // Значение (напр. "+5,61%")
-                        foreach (var nm in new[] { "GetFormattedValue", "GetValueString", "ValueText", "Value", "Amount" })
+                        else if (parameters.Length == 1 && parameters[0].ParameterType == typeof(UpgradeInstance))
                         {
-                            var p = pt.GetProperty(nm, BindingFlags.Public | BindingFlags.Instance);
-                            if (p != null) { try { valStr = p.GetValue(prop)?.ToString(); } catch { } }
-                            if (valStr == null)
-                            {
-                                var m = pt.GetMethod(nm, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
-                                if (m != null) { try { valStr = m.Invoke(prop, null)?.ToString(); } catch { } }
-                            }
-                            if (valStr == null)
-                            {
-                                var f = pt.GetField(nm, BindingFlags.Public | BindingFlags.Instance);
-                                if (f != null) { try { valStr = f.GetValue(prop)?.ToString(); } catch { } }
-                            }
-                            if (valStr != null) break;
-                        }
-
-                        if (!string.IsNullOrEmpty(nameStr) || !string.IsNullOrEmpty(valStr))
-                        {
-                            if (sb.Length > 0) sb.Append(" | ");
-                            sb.Append(nameStr ?? "Stat");
-                            if (!string.IsNullOrEmpty(valStr)) sb.Append(": ").Append(valStr);
+                            stats = statMethod.Invoke(upg, new object[] { u }) as string ?? "";
                         }
                     }
-                    if (sb.Length > 0) return StripTags(sb.ToString());
+                    catch { }
                 }
 
-                // 3. Фоллбэк на флейвор-текст, если статы не найдены
-                foreach (var name in new[] { "Description", "DescriptionText", "EffectText", "EffectDescription" })
-                {
-                    var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-                    if (p != null && p.PropertyType == typeof(string))
-                    {
-                        var v = p.GetValue(upg) as string;
-                        if (!string.IsNullOrWhiteSpace(v)) return StripTags(v);
-                    }
-                }
+                // 3. Склеиваем: сверху флейвор-текст, снизу статы
+                flavor = StripTags(flavor).Trim();
+                stats = StripTags(stats).Trim();
+
+                if (!string.IsNullOrEmpty(flavor) && !string.IsNullOrEmpty(stats))
+                    return flavor + "\n" + stats;
+                if (!string.IsNullOrEmpty(flavor)) return flavor;
+                if (!string.IsNullOrEmpty(stats)) return stats;
+
+                return ""; 
             }
             catch { }
             return "";
         }
 
-        private static void DumpUpgradeFields(Upgrade upg)
+        internal static string StripTags(string? s)
         {
-            _dumpedUpgradeFields = true;
-            try
-            {
-                var t = upg.GetType();
-                BuildArchitectPlugin.Log.LogInfo($"=== Upgrade Property Dump ({t.Name}) ===");
-                
-                var propsProp = t.GetProperty("Properties", BindingFlags.Public | BindingFlags.Instance)
-                    ?? t.GetField("Properties", BindingFlags.Public | BindingFlags.Instance) as MemberInfo;
-                System.Collections.IEnumerable? props = null;
-                if (propsProp is PropertyInfo pp) props = pp.GetValue(upg) as System.Collections.IEnumerable;
-                else if (propsProp is FieldInfo pf) props = pf.GetValue(upg) as System.Collections.IEnumerable;
-
-                if (props != null)
-                {
-                    foreach (var prop in props)
-                    {
-                        if (prop == null) continue;
-                        var pt = prop.GetType();
-                        BuildArchitectPlugin.Log.LogInfo($"  -- Property type: {pt.Name} --");
-                        foreach (var p in pt.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                        {
-                            try { BuildArchitectPlugin.Log.LogInfo($"    Prop {p.Name} ({p.PropertyType.Name}) = {p.GetValue(prop)}"); } catch { }
-                        }
-                        foreach (var f in pt.GetFields(BindingFlags.Public | BindingFlags.Instance))
-                        {
-                            try { BuildArchitectPlugin.Log.LogInfo($"    Field {f.Name} ({f.FieldType.Name}) = {f.GetValue(prop)}"); } catch { }
-                        }
-                        break; // Достаточно одного для анализа
-                    }
-                }
-            }
-            catch { }
-        }
-
-        internal static string StripTags(string s)
-        {
-            if (string.IsNullOrEmpty(s) || s.IndexOf('<') < 0) return s;
+            if (string.IsNullOrEmpty(s) || s.IndexOf('<') < 0) return s ?? "";
             var sb = new StringBuilder(s.Length);
             bool inTag = false;
             foreach (char c in s)
