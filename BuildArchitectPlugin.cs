@@ -48,21 +48,13 @@ namespace MycopunkBuildArchitect
         private static void OnWindowOpened(object __instance)
         {
             if (Instance == null) return;
-            var oldWin = Instance.CurrentWindow;
             Instance.CurrentWindow = __instance as GearDetailsWindow;
-            // Only reset per-window state when we actually swapped to a different gear window.
-            if (!ReferenceEquals(oldWin, Instance.CurrentWindow))
-                ArchitectUI.OnWindowChanged();
         }
 
         private static void OnWindowClosed()
         {
             if (Instance == null) return;
-            if (Instance.CurrentWindow != null)
-            {
-                Instance.CurrentWindow = null;
-                ArchitectUI.OnWindowChanged();
-            }
+            Instance.CurrentWindow = null;
         }
 
         private void Update()

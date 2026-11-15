@@ -1,31 +1,39 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 
 namespace MycopunkBuildArchitect
 {
     public static class ArchitectUI
     {
+        /// <summary>Per-gear UI/session state. One per weapon, persists across window switches.</summary>
+        private sealed class GearState
+        {
+            public List<UpgradeInstance> ScannedCandidates = new();
+            public Dictionary<int, bool> RequiredFlags = new();
+            public bool Scanned;
+            public Vector2 Scroll;
+            public Vector2 ScanScroll;
+            public string Status = "Open gear window, then Scan or Generate.";
+            public MultiLayoutManager Manager = new();
+            public bool IsWorking;
+        }
+
         private static bool _visible;
         private static Rect _windowRect = new(30, 40, 580, 750);
-        private static Vector2 _scroll;
-        private static Vector2 _scanScroll;
-        private static readonly MultiLayoutManager _manager = new();
-        private static bool _isWorking;
-        private static string _status = "Open gear window, then Scan or Generate.";
 
+        // Weak table: state dies with the gear instance. Same weapon = same state.
+        private static readonly ConditionalWeakTable<IUpgradable, GearState> _gearStates = new();
+        private static readonly GearState _fallbackState = new();
+
+        // These options are user preferences, not per-gear.
         private static bool _includeOuroboros = false;
         private static bool _ignoreRotationLocks = false;
         private static bool _showScanList = true;
 
-        private static List<UpgradeInstance> _scannedCandidates = new();
-        private static readonly Dictionary<int, bool> _requiredFlags = new();
-        private static bool _scanned;
-
         private static Texture2D? _bgTex;
         private static Texture2D? _boxTex;
-
-        // Cached IMGUI styles — allocated once, reused every frame instead of per-draw.
         private static GUIStyle? _winStyle;
         private static GUIStyle? _boxStyle;
         private static GUIStyle? _labelStyle;
@@ -33,19 +41,18 @@ namespace MycopunkBuildArchitect
 
         public static void ToggleVisibility() => _visible = !_visible;
 
-        /// <summary>Called when the active GearDetailsWindow changes — clears per-gear state.</summary>
-        internal static void OnWindowChanged()
+        private static GearState CurrentState
         {
-            _requiredFlags.Clear();
-            _scannedCandidates.Clear();
-            _scanned = false;
-            _manager.FoundVariants.Clear();
-            _scroll = Vector2.zero;
-            _scanScroll = Vector2.zero;
-            _status = "Open gear window, then Scan or Generate.";
+            get
+            {
+                var win = BuildArchitectPlugin.Instance?.CurrentWindow;
+                IUpgradable? gear = null;
+                try { gear = win?.UpgradablePrefab; } catch { }
+                if (gear == null) return _fallbackState;
+                return _gearStates.GetValue(gear, _ => new GearState());
+            }
         }
 
-        /// <summary>Destroys runtime textures/styles — called from BuildArchitectPlugin.OnDestroy.</summary>
         internal static void Dispose()
         {
             if (_bgTex != null) { Object.Destroy(_bgTex); _bgTex = null; }
@@ -125,8 +132,10 @@ namespace MycopunkBuildArchitect
 
         private static void DrawWindow(int id)
         {
-            GUILayout.BeginVertical();
+            var st = CurrentState;
             var win = BuildArchitectPlugin.Instance?.CurrentWindow;
+
+            GUILayout.BeginVertical();
             string gearName = "?";
             try { gearName = win?.UpgradablePrefab?.Info?.Name ?? "?"; } catch { }
 
@@ -140,34 +149,34 @@ namespace MycopunkBuildArchitect
             if (GUILayout.Button(_showScanList ? "▼ Hide available upgrades" : "▶ Show available upgrades", GUILayout.Height(22)))
                 _showScanList = !_showScanList;
 
-            GUI.enabled = !_isWorking;
+            GUI.enabled = !st.IsWorking;
             if (GUILayout.Button("1. Scan available upgrades", GUILayout.Height(28)))
             {
                 if (win != null)
                 {
-                    _scannedCandidates = ScanCandidates(win);
-                    // Preserve the user's ★ selections across rescans — only seed new IDs.
-                    foreach (var c in _scannedCandidates)
+                    st.ScannedCandidates = ScanCandidates(win);
+                    // Preserve ★ selections — only seed new IDs.
+                    foreach (var c in st.ScannedCandidates)
                     {
                         int sourceId = LayoutSolver.GetSourceId(c);
-                        if (!_requiredFlags.ContainsKey(sourceId))
-                            _requiredFlags[sourceId] = false;
+                        if (!st.RequiredFlags.ContainsKey(sourceId))
+                            st.RequiredFlags[sourceId] = false;
                     }
-                    _scanned = true;
+                    st.Scanned = true;
                     _showScanList = true;
-                    _status = $"Scanned {_scannedCandidates.Count} upgrade type(s).";
+                    st.Status = $"Scanned {st.ScannedCandidates.Count} upgrade type(s).";
                 }
             }
             GUI.enabled = true;
 
-            if (_scanned && _scannedCandidates.Count > 0 && _showScanList)
+            if (st.Scanned && st.ScannedCandidates.Count > 0 && _showScanList)
             {
-                GUILayout.Label($"<b>Available ({_scannedCandidates.Count})</b> — mark ★ to force into layout:");
-                _scanScroll = GUILayout.BeginScrollView(_scanScroll, GUILayout.Height(200));
-                foreach (var c in _scannedCandidates)
+                GUILayout.Label($"<b>Available ({st.ScannedCandidates.Count})</b> — mark ★ to force into layout:");
+                st.ScanScroll = GUILayout.BeginScrollView(st.ScanScroll, GUILayout.Height(200));
+                foreach (var c in st.ScannedCandidates)
                 {
                     int sid = LayoutSolver.GetSourceId(c);
-                    bool req = _requiredFlags.TryGetValue(sid, out var v) && v;
+                    bool req = st.RequiredFlags.TryGetValue(sid, out var v) && v;
                     string name = LayoutSolver.SafeName(c);
                     string desc = LayoutSolver.SafeDescription(c);
                     string label = string.IsNullOrEmpty(desc) ? name : name + "\n    " + desc;
@@ -178,44 +187,44 @@ namespace MycopunkBuildArchitect
                     GUILayout.EndHorizontal();
                     GUILayout.Space(2);
 
-                    if (newReq != req) _requiredFlags[sid] = newReq;
+                    if (newReq != req) st.RequiredFlags[sid] = newReq;
                 }
                 GUILayout.EndScrollView();
             }
 
             GUILayout.Space(4);
-            GUI.enabled = !_isWorking;
+            GUI.enabled = !st.IsWorking;
             if (GUILayout.Button("2. Generate layouts", GUILayout.Height(32)))
             {
                 if (win != null && BuildArchitectPlugin.Instance != null)
                 {
-                    if (!_scanned)
+                    if (!st.Scanned)
                     {
-                        _scannedCandidates = ScanCandidates(win);
-                        foreach (var c in _scannedCandidates)
+                        st.ScannedCandidates = ScanCandidates(win);
+                        foreach (var c in st.ScannedCandidates)
                         {
                             int sid = LayoutSolver.GetSourceId(c);
-                            if (!_requiredFlags.ContainsKey(sid)) _requiredFlags[sid] = false;
+                            if (!st.RequiredFlags.ContainsKey(sid)) st.RequiredFlags[sid] = false;
                         }
-                        _scanned = true;
+                        st.Scanned = true;
                     }
 
-                    _isWorking = true;
-                    _status = "Searching...";
-                    BuildArchitectPlugin.Instance.StartCoroutine(RunGenerate(win));
+                    st.IsWorking = true;
+                    st.Status = "Searching...";
+                    BuildArchitectPlugin.Instance.StartCoroutine(RunGenerate(win, st));
                 }
             }
             GUI.enabled = true;
 
             GUILayout.Space(6);
-            GUILayout.Label($"<b>Results ({_manager.FoundVariants.Count}):</b>");
+            GUILayout.Label($"<b>Results ({st.Manager.FoundVariants.Count}):</b>");
 
-            _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
+            st.Scroll = GUILayout.BeginScrollView(st.Scroll, GUILayout.ExpandHeight(true));
 
-            if (_manager.FoundVariants.Count == 0)
+            if (st.Manager.FoundVariants.Count == 0)
                 GUILayout.Label("(none yet — press Generate)");
 
-            foreach (var v in _manager.FoundVariants)
+            foreach (var v in st.Manager.FoundVariants)
             {
                 GUILayout.BeginVertical("box");
                 string reqWarn = v.RequiredMissing > 0 ? $"  <color=red>⚠ {v.RequiredMissing} REQUIRED missing</color>" : "";
@@ -231,14 +240,14 @@ namespace MycopunkBuildArchitect
                 if (v.Missing.Count > 0)
                     GUILayout.Label("  <color=orange>Missing: " + string.Join(", ", v.Missing) + "</color>");
 
-                GUI.enabled = !_isWorking;
+                GUI.enabled = !st.IsWorking;
                 if (GUILayout.Button("Apply this layout", GUILayout.Height(26)))
                 {
                     if (win != null && BuildArchitectPlugin.Instance != null)
                     {
-                        _isWorking = true;
-                        _status = "Applying " + v.Name + "...";
-                        BuildArchitectPlugin.Instance.StartCoroutine(RunApply(win, v));
+                        st.IsWorking = true;
+                        st.Status = "Applying " + v.Name + "...";
+                        BuildArchitectPlugin.Instance.StartCoroutine(RunApply(win, v, st));
                     }
                 }
                 GUI.enabled = true;
@@ -248,7 +257,7 @@ namespace MycopunkBuildArchitect
             GUILayout.EndScrollView();
 
             GUILayout.Space(4);
-            GUILayout.Label(_status);
+            GUILayout.Label(st.Status);
             if (GUILayout.Button("Close", GUILayout.Width(75))) _visible = false;
 
             GUILayout.EndVertical();
@@ -270,22 +279,22 @@ namespace MycopunkBuildArchitect
             }
         }
 
-        private static HashSet<int> BuildRequiredSet()
+        private static HashSet<int> BuildRequiredSet(Dictionary<int, bool> flags)
         {
             var set = new HashSet<int>();
-            foreach (var kv in _requiredFlags)
+            foreach (var kv in flags)
                 if (kv.Value) set.Add(kv.Key);
             return set;
         }
 
-        private static IEnumerator RunGenerate(GearDetailsWindow win)
+        private static IEnumerator RunGenerate(GearDetailsWindow win, GearState st)
         {
             yield return null;
             try
             {
-                var required = BuildRequiredSet();
+                var required = BuildRequiredSet(st.RequiredFlags);
                 bool done = false;
-                var routine = _manager.GenerateVariants(win, _includeOuroboros, _ignoreRotationLocks, required, () => done = true);
+                var routine = st.Manager.GenerateVariants(win, _includeOuroboros, _ignoreRotationLocks, required, () => done = true);
                 while (!done)
                 {
                     object? cur = null;
@@ -295,15 +304,15 @@ namespace MycopunkBuildArchitect
                     if (!has) break;
                     yield return cur;
                 }
-                _status = $"Done. {_manager.FoundVariants.Count} layout(s) generated ({required.Count} required).";
+                st.Status = $"Done. {st.Manager.FoundVariants.Count} layout(s) generated ({required.Count} required).";
             }
             finally
             {
-                _isWorking = false;
+                st.IsWorking = false;
             }
         }
 
-        private static IEnumerator RunApply(GearDetailsWindow win, LayoutVariant v)
+        private static IEnumerator RunApply(GearDetailsWindow win, LayoutVariant v, GearState st)
         {
             yield return null;
             try
@@ -331,13 +340,13 @@ namespace MycopunkBuildArchitect
                     }
                 }
 
-                _status = result
+                st.Status = result
                     ? ("Applied " + v.Name + $" — {v.PlacedCount}/{v.TotalCount} placed.")
                     : "Apply failed.";
             }
             finally
             {
-                _isWorking = false;
+                st.IsWorking = false;
             }
         }
     }
