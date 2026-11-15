@@ -7,7 +7,7 @@ namespace MycopunkBuildArchitect
     public static class ArchitectUI
     {
         private static bool _visible;
-        private static Rect _windowRect = new(30, 40, 560, 860);
+        private static Rect _windowRect = new(30, 40, 580, 750); // Немного уменьшили высоту окна
         private static Vector2 _scroll;
         private static Vector2 _scanScroll;
         private static readonly MultiLayoutManager _manager = new();
@@ -16,6 +16,7 @@ namespace MycopunkBuildArchitect
 
         private static bool _includeOuroboros = false;
         private static bool _ignoreRotationLocks = false;
+        private static bool _showScanList = true; // Новая галочка для скрытия
 
         private static List<UpgradeInstance> _scannedCandidates = new();
         private static readonly Dictionary<int, bool> _requiredFlags = new();
@@ -44,6 +45,12 @@ namespace MycopunkBuildArchitect
             _ignoreRotationLocks = GUILayout.Toggle(_ignoreRotationLocks, " Ignore rotation level locks (Cheat mode)");
             GUILayout.Space(4);
 
+            // Кнопка сворачивания/разворачивания списка
+            if (GUILayout.Button(_showScanList ? "▼ Hide available upgrades" : "▶ Show available upgrades", GUILayout.Height(22)))
+            {
+                _showScanList = !_showScanList;
+            }
+
             GUI.enabled = !_isWorking;
             if (GUILayout.Button("1. Scan available upgrades", GUILayout.Height(28)))
             {
@@ -54,15 +61,16 @@ namespace MycopunkBuildArchitect
                     foreach (var c in _scannedCandidates)
                         _requiredFlags[LayoutSolver.GetSourceId(c)] = false;
                     _scanned = true;
+                    _showScanList = true; // Автоматически открываем после скана
                     _status = $"Scanned {_scannedCandidates.Count} upgrade type(s).";
                 }
             }
             GUI.enabled = true;
 
-            if (_scanned && _scannedCandidates.Count > 0)
+            if (_scanned && _scannedCandidates.Count > 0 && _showScanList)
             {
                 GUILayout.Label($"Available ({_scannedCandidates.Count}) — mark ★ to force into layout:");
-                _scanScroll = GUILayout.BeginScrollView(_scanScroll, GUILayout.Height(220));
+                _scanScroll = GUILayout.BeginScrollView(_scanScroll, GUILayout.Height(200));
                 foreach (var c in _scannedCandidates)
                 {
                     int sid = LayoutSolver.GetSourceId(c);
@@ -105,7 +113,9 @@ namespace MycopunkBuildArchitect
 
             GUILayout.Space(6);
             GUILayout.Label($"Results ({_manager.FoundVariants.Count}):");
-            _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.Height(300));
+            
+            // Используем ExpandHeight, чтобы список заполнил оставшееся место в окне (убирает пустоту)
+            _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
 
             if (_manager.FoundVariants.Count == 0)
                 GUILayout.Label("(none yet — press Generate)");

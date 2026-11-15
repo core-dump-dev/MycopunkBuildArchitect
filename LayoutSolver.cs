@@ -233,7 +233,6 @@ namespace MycopunkBuildArchitect
                 return;
             }
 
-            // Pruning
             int remaining = items.Count - index;
             int requiredRemaining = 0;
             for (int i = index; i < items.Count; i++)
@@ -455,7 +454,6 @@ namespace MycopunkBuildArchitect
                 case "Random": var rng = new System.Random(12345); sorted = list.OrderBy(_ => rng.Next()).ToList(); break;
                 default: sorted = list.ToList(); break;
             }
-            // Required — в начало
             return sorted.OrderByDescending(u => requiredIds.Contains(GetSourceId(u)) ? 1 : 0).ToList();
         }
 
@@ -477,35 +475,25 @@ namespace MycopunkBuildArchitect
             {
                 var upg = u.Upgrade;
                 if (upg == null) return "";
+                
                 if (!_dumpedUpgradeFields) DumpUpgradeFields(upg);
+                
                 var t = upg.GetType();
+                var it = u.GetType();
 
-                foreach (var name in new[] { "Description", "DescriptionText", "EffectText", "EffectDescription", "StatsText", "ShortDescription" })
+                // 1. Ищем метод, который возвращает строку со статами
+                foreach (var name in new[] { "GetStatsDescription", "GetFormattedStats", "GetTooltipStats", "GetStatsString", "GetPropertyString" })
                 {
-                    var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-                    if (p != null && p.PropertyType == typeof(string))
-                    {
-                        var v = p.GetValue(upg) as string;
-                        if (!string.IsNullOrWhiteSpace(v)) return StripTags(v);
-                    }
-                    var f = t.GetField(name, BindingFlags.Public | BindingFlags.Instance);
-                    if (f != null && f.FieldType == typeof(string))
-                    {
-                        var v = f.GetValue(upg) as string;
-                        if (!string.IsNullOrWhiteSpace(v)) return StripTags(v);
-                    }
-                }
-                foreach (var name in new[] { "GetDescription", "GetStatsDescription", "GetEffectText" })
-                {
-                    var m = t.GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                    var m = t.GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, new[] { it }, null) ??
+                            t.GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
                     if (m != null && m.ReturnType == typeof(string))
                     {
-                        var v = m.Invoke(upg, null) as string;
+                        var v = m.Invoke(upg, m.GetParameters().Length == 0 ? null : new object[] { u }) as string;
                         if (!string.IsNullOrWhiteSpace(v)) return StripTags(v);
                     }
                 }
 
-                // Fallback: properties array
+                // 2. Пытаемся собрать статы из массива Properties
                 var propsProp = t.GetProperty("Properties", BindingFlags.Public | BindingFlags.Instance)
                     ?? t.GetField("Properties", BindingFlags.Public | BindingFlags.Instance) as MemberInfo;
                 System.Collections.IEnumerable? props = null;
@@ -519,18 +507,55 @@ namespace MycopunkBuildArchitect
                     {
                         if (prop == null) continue;
                         var pt = prop.GetType();
-                        string? line = null;
-                        foreach (var nm in new[] { "Description", "Text", "EffectText", "ValueText", "FormattedValue" })
+                        string? nameStr = null;
+                        string? valStr = null;
+
+                        // Имя характеристики (напр. "ЗДОРОВЬЕ")
+                        foreach (var nm in new[] { "Name", "StatName", "Title" })
                         {
                             var p = pt.GetProperty(nm, BindingFlags.Public | BindingFlags.Instance);
-                            if (p != null)
-                            {
-                                try { var v = p.GetValue(prop)?.ToString(); if (!string.IsNullOrEmpty(v)) { line = StripTags(v); break; } } catch { }
-                            }
+                            if (p != null && p.PropertyType == typeof(string)) { nameStr = p.GetValue(prop) as string; break; }
+                            var f = pt.GetField(nm, BindingFlags.Public | BindingFlags.Instance);
+                            if (f != null && f.FieldType == typeof(string)) { nameStr = f.GetValue(prop) as string; break; }
                         }
-                        if (line != null) { if (sb.Length > 0) sb.Append(", "); sb.Append(line); }
+
+                        // Значение (напр. "+5,61%")
+                        foreach (var nm in new[] { "GetFormattedValue", "GetValueString", "ValueText", "Value", "Amount" })
+                        {
+                            var p = pt.GetProperty(nm, BindingFlags.Public | BindingFlags.Instance);
+                            if (p != null) { try { valStr = p.GetValue(prop)?.ToString(); } catch { } }
+                            if (valStr == null)
+                            {
+                                var m = pt.GetMethod(nm, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                                if (m != null) { try { valStr = m.Invoke(prop, null)?.ToString(); } catch { } }
+                            }
+                            if (valStr == null)
+                            {
+                                var f = pt.GetField(nm, BindingFlags.Public | BindingFlags.Instance);
+                                if (f != null) { try { valStr = f.GetValue(prop)?.ToString(); } catch { } }
+                            }
+                            if (valStr != null) break;
+                        }
+
+                        if (!string.IsNullOrEmpty(nameStr) || !string.IsNullOrEmpty(valStr))
+                        {
+                            if (sb.Length > 0) sb.Append(" | ");
+                            sb.Append(nameStr ?? "Stat");
+                            if (!string.IsNullOrEmpty(valStr)) sb.Append(": ").Append(valStr);
+                        }
                     }
-                    if (sb.Length > 0) return sb.ToString();
+                    if (sb.Length > 0) return StripTags(sb.ToString());
+                }
+
+                // 3. Фоллбэк на флейвор-текст, если статы не найдены
+                foreach (var name in new[] { "Description", "DescriptionText", "EffectText", "EffectDescription" })
+                {
+                    var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                    if (p != null && p.PropertyType == typeof(string))
+                    {
+                        var v = p.GetValue(upg) as string;
+                        if (!string.IsNullOrWhiteSpace(v)) return StripTags(v);
+                    }
                 }
             }
             catch { }
@@ -543,13 +568,32 @@ namespace MycopunkBuildArchitect
             try
             {
                 var t = upg.GetType();
-                BuildArchitectPlugin.Log.LogInfo($"=== Upgrade dump ({t.Name}) ===");
-                foreach (var p in t.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                    if (p.PropertyType == typeof(string))
-                        try { BuildArchitectPlugin.Log.LogInfo($"  Prop {p.Name} = {p.GetValue(upg)}"); } catch { }
-                foreach (var f in t.GetFields(BindingFlags.Public | BindingFlags.Instance))
-                    if (f.FieldType == typeof(string))
-                        try { BuildArchitectPlugin.Log.LogInfo($"  Field {f.Name} = {f.GetValue(upg)}"); } catch { }
+                BuildArchitectPlugin.Log.LogInfo($"=== Upgrade Property Dump ({t.Name}) ===");
+                
+                var propsProp = t.GetProperty("Properties", BindingFlags.Public | BindingFlags.Instance)
+                    ?? t.GetField("Properties", BindingFlags.Public | BindingFlags.Instance) as MemberInfo;
+                System.Collections.IEnumerable? props = null;
+                if (propsProp is PropertyInfo pp) props = pp.GetValue(upg) as System.Collections.IEnumerable;
+                else if (propsProp is FieldInfo pf) props = pf.GetValue(upg) as System.Collections.IEnumerable;
+
+                if (props != null)
+                {
+                    foreach (var prop in props)
+                    {
+                        if (prop == null) continue;
+                        var pt = prop.GetType();
+                        BuildArchitectPlugin.Log.LogInfo($"  -- Property type: {pt.Name} --");
+                        foreach (var p in pt.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                        {
+                            try { BuildArchitectPlugin.Log.LogInfo($"    Prop {p.Name} ({p.PropertyType.Name}) = {p.GetValue(prop)}"); } catch { }
+                        }
+                        foreach (var f in pt.GetFields(BindingFlags.Public | BindingFlags.Instance))
+                        {
+                            try { BuildArchitectPlugin.Log.LogInfo($"    Field {f.Name} ({f.FieldType.Name}) = {f.GetValue(prop)}"); } catch { }
+                        }
+                        break; // Достаточно одного для анализа
+                    }
+                }
             }
             catch { }
         }
