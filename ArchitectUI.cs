@@ -101,9 +101,14 @@ namespace MycopunkBuildArchitect
                 if (win != null)
                 {
                     _scannedCandidates = ScanCandidates(win);
-                    _requiredFlags.Clear();
+                    // Keep the user's required selections across rescans.
+                    // Only initialize flags for newly discovered upgrade IDs.
                     foreach (var c in _scannedCandidates)
-                        _requiredFlags[LayoutSolver.GetSourceId(c)] = false;
+                    {
+                        int sourceId = LayoutSolver.GetSourceId(c);
+                        if (!_requiredFlags.ContainsKey(sourceId))
+                            _requiredFlags[sourceId] = false;
+                    }
                     _scanned = true;
                     _showScanList = true;
                     _status = $"Scanned {_scannedCandidates.Count} upgrade type(s).";
