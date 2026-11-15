@@ -22,10 +22,39 @@ namespace MycopunkBuildArchitect
         private static readonly Dictionary<int, bool> _requiredFlags = new();
         private static bool _scanned;
 
-        private static Texture2D _bgTex = null!;
-        private static Texture2D _boxTex = null!;
+        private static Texture2D? _bgTex;
+        private static Texture2D? _boxTex;
+
+        // Cached IMGUI styles — allocated once, reused every frame instead of per-draw.
+        private static GUIStyle? _winStyle;
+        private static GUIStyle? _boxStyle;
+        private static GUIStyle? _labelStyle;
+        private static GUIStyle? _wrapStyle;
 
         public static void ToggleVisibility() => _visible = !_visible;
+
+        /// <summary>Called when the active GearDetailsWindow changes — clears per-gear state.</summary>
+        internal static void OnWindowChanged()
+        {
+            _requiredFlags.Clear();
+            _scannedCandidates.Clear();
+            _scanned = false;
+            _manager.FoundVariants.Clear();
+            _scroll = Vector2.zero;
+            _scanScroll = Vector2.zero;
+            _status = "Open gear window, then Scan or Generate.";
+        }
+
+        /// <summary>Destroys runtime textures/styles — called from BuildArchitectPlugin.OnDestroy.</summary>
+        internal static void Dispose()
+        {
+            if (_bgTex != null) { Object.Destroy(_bgTex); _bgTex = null; }
+            if (_boxTex != null) { Object.Destroy(_boxTex); _boxTex = null; }
+            _winStyle = null;
+            _boxStyle = null;
+            _labelStyle = null;
+            _wrapStyle = null;
+        }
 
         private static void EnsureTextures()
         {
@@ -43,6 +72,33 @@ namespace MycopunkBuildArchitect
             }
         }
 
+        private static void EnsureStyles()
+        {
+            if (_winStyle == null)
+            {
+                _winStyle = new GUIStyle(GUI.skin.window);
+                _winStyle.normal.background = _bgTex;
+                _winStyle.onNormal.background = _bgTex;
+                _winStyle.normal.textColor = Color.white;
+            }
+            if (_boxStyle == null)
+            {
+                _boxStyle = new GUIStyle(GUI.skin.box);
+                _boxStyle.normal.background = _boxTex;
+            }
+            if (_labelStyle == null)
+            {
+                _labelStyle = new GUIStyle(GUI.skin.label);
+                _labelStyle.normal.textColor = Color.white;
+            }
+            if (_wrapStyle == null)
+            {
+                _wrapStyle = new GUIStyle(GUI.skin.label);
+                _wrapStyle.wordWrap = true;
+                _wrapStyle.normal.textColor = Color.white;
+            }
+        }
+
         public static void DrawIfVisible()
         {
             if (!_visible) return;
@@ -50,24 +106,15 @@ namespace MycopunkBuildArchitect
             if (plugin == null || plugin.CurrentWindow == null) return;
 
             EnsureTextures();
+            EnsureStyles();
 
             var prevWindow = GUI.skin.window;
             var prevBox = GUI.skin.box;
             var prevLabel = GUI.skin.label;
 
-            var winStyle = new GUIStyle(prevWindow);
-            winStyle.normal.background = _bgTex;
-            winStyle.onNormal.background = _bgTex;
-            winStyle.normal.textColor = Color.white;
-            GUI.skin.window = winStyle;
-
-            var boxStyle = new GUIStyle(prevBox);
-            boxStyle.normal.background = _boxTex;
-            GUI.skin.box = boxStyle;
-
-            var labelStyle = new GUIStyle(prevLabel);
-            labelStyle.normal.textColor = Color.white;
-            GUI.skin.label = labelStyle;
+            GUI.skin.window = _winStyle!;
+            GUI.skin.box = _boxStyle!;
+            GUI.skin.label = _labelStyle!;
 
             _windowRect = GUI.Window(182742, _windowRect, DrawWindow, "BUILD ARCHITECT");
 
@@ -82,7 +129,7 @@ namespace MycopunkBuildArchitect
             var win = BuildArchitectPlugin.Instance?.CurrentWindow;
             string gearName = "?";
             try { gearName = win?.UpgradablePrefab?.Info?.Name ?? "?"; } catch { }
-            
+
             GUILayout.Label("<b>Gear: " + gearName + "</b>");
             GUILayout.Space(4);
 
@@ -91,9 +138,7 @@ namespace MycopunkBuildArchitect
             GUILayout.Space(4);
 
             if (GUILayout.Button(_showScanList ? "▼ Hide available upgrades" : "▶ Show available upgrades", GUILayout.Height(22)))
-            {
                 _showScanList = !_showScanList;
-            }
 
             GUI.enabled = !_isWorking;
             if (GUILayout.Button("1. Scan available upgrades", GUILayout.Height(28)))
@@ -101,8 +146,7 @@ namespace MycopunkBuildArchitect
                 if (win != null)
                 {
                     _scannedCandidates = ScanCandidates(win);
-                    // Keep the user's required selections across rescans.
-                    // Only initialize flags for newly discovered upgrade IDs.
+                    // Preserve the user's ★ selections across rescans — only seed new IDs.
                     foreach (var c in _scannedCandidates)
                     {
                         int sourceId = LayoutSolver.GetSourceId(c);
@@ -130,10 +174,7 @@ namespace MycopunkBuildArchitect
 
                     GUILayout.BeginHorizontal();
                     bool newReq = GUILayout.Toggle(req, req ? " ★ " : " ☐ ", GUILayout.Width(30));
-                    
-                    var wrapStyle = new GUIStyle(GUI.skin.label);
-                    wrapStyle.wordWrap = true;
-                    GUILayout.Label(label, wrapStyle);
+                    GUILayout.Label(label, _wrapStyle!);
                     GUILayout.EndHorizontal();
                     GUILayout.Space(2);
 
@@ -152,8 +193,10 @@ namespace MycopunkBuildArchitect
                     {
                         _scannedCandidates = ScanCandidates(win);
                         foreach (var c in _scannedCandidates)
-                            if (!_requiredFlags.ContainsKey(LayoutSolver.GetSourceId(c)))
-                                _requiredFlags[LayoutSolver.GetSourceId(c)] = false;
+                        {
+                            int sid = LayoutSolver.GetSourceId(c);
+                            if (!_requiredFlags.ContainsKey(sid)) _requiredFlags[sid] = false;
+                        }
                         _scanned = true;
                     }
 
@@ -166,7 +209,7 @@ namespace MycopunkBuildArchitect
 
             GUILayout.Space(6);
             GUILayout.Label($"<b>Results ({_manager.FoundVariants.Count}):</b>");
-            
+
             _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
 
             if (_manager.FoundVariants.Count == 0)
@@ -176,8 +219,6 @@ namespace MycopunkBuildArchitect
             {
                 GUILayout.BeginVertical("box");
                 string reqWarn = v.RequiredMissing > 0 ? $"  <color=red>⚠ {v.RequiredMissing} REQUIRED missing</color>" : "";
-                
-                // Заменили "cells" на "cells free"
                 GUILayout.Label($"<b>{v.Name}  [{v.Strategy}]</b>  {v.PlacedCount}/{v.TotalCount} upgrades, {v.FreeCells} cells free{reqWarn}");
 
                 foreach (var p in v.Upgrades)
@@ -240,50 +281,64 @@ namespace MycopunkBuildArchitect
         private static IEnumerator RunGenerate(GearDetailsWindow win)
         {
             yield return null;
-            var required = BuildRequiredSet();
-            bool done = false;
-            var routine = _manager.GenerateVariants(win, _includeOuroboros, _ignoreRotationLocks, required, () => done = true);
-            while (!done)
+            try
             {
-                object? cur = null;
-                bool has;
-                try { has = routine.MoveNext(); if (has) cur = routine.Current; }
-                catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Generate: " + ex); break; }
-                if (!has) break;
-                yield return cur;
+                var required = BuildRequiredSet();
+                bool done = false;
+                var routine = _manager.GenerateVariants(win, _includeOuroboros, _ignoreRotationLocks, required, () => done = true);
+                while (!done)
+                {
+                    object? cur = null;
+                    bool has;
+                    try { has = routine.MoveNext(); if (has) cur = routine.Current; }
+                    catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Generate: " + ex); break; }
+                    if (!has) break;
+                    yield return cur;
+                }
+                _status = $"Done. {_manager.FoundVariants.Count} layout(s) generated ({required.Count} required).";
             }
-            _status = $"Done. {_manager.FoundVariants.Count} layout(s) generated ({required.Count} required).";
-            _isWorking = false;
+            finally
+            {
+                _isWorking = false;
+            }
         }
 
         private static IEnumerator RunApply(GearDetailsWindow win, LayoutVariant v)
         {
             yield return null;
-            bool result = false;
-            IEnumerator? routine = null;
-
             try
             {
-                var solver = new LayoutSolver(win, _includeOuroboros, _ignoreRotationLocks);
-                routine = solver.Apply(v, r => result = r);
-            }
-            catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply init: " + ex); }
+                bool result = false;
+                IEnumerator? routine = null;
 
-            if (routine != null)
-            {
-                while (true)
+                try
                 {
-                    object? cur = null;
-                    bool has;
-                    try { has = routine.MoveNext(); if (has) cur = routine.Current; }
-                    catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply step: " + ex); break; }
-                    if (!has) break;
-                    yield return cur;
+                    var solver = new LayoutSolver(win, _includeOuroboros, _ignoreRotationLocks);
+                    routine = solver.Apply(v, r => result = r);
                 }
-            }
+                catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply init: " + ex); }
 
-            _status = result ? ("Applied " + v.Name + $" — {v.PlacedCount}/{v.TotalCount} placed.") : "Apply failed.";
-            _isWorking = false;
+                if (routine != null)
+                {
+                    while (true)
+                    {
+                        object? cur = null;
+                        bool has;
+                        try { has = routine.MoveNext(); if (has) cur = routine.Current; }
+                        catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply step: " + ex); break; }
+                        if (!has) break;
+                        yield return cur;
+                    }
+                }
+
+                _status = result
+                    ? ("Applied " + v.Name + $" — {v.PlacedCount}/{v.TotalCount} placed.")
+                    : "Apply failed.";
+            }
+            finally
+            {
+                _isWorking = false;
+            }
         }
     }
 }

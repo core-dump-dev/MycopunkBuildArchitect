@@ -12,7 +12,7 @@ namespace MycopunkBuildArchitect
     {
         public const string PluginGuid = "mycopunk.buildarchitect";
         public const string PluginName = "Mycopunk Build Architect";
-        public const string PluginVersion = "0.3.0";
+        public const string PluginVersion = "0.3.1";
 
         internal static ManualLogSource Log = null!;
         internal static BuildArchitectPlugin? Instance { get; private set; }
@@ -42,15 +42,28 @@ namespace MycopunkBuildArchitect
         {
             if (Instance == this) Instance = null;
             try { _harmony?.UnpatchSelf(); } catch { }
+            ArchitectUI.Dispose();
         }
 
         private static void OnWindowOpened(object __instance)
         {
             if (Instance == null) return;
+            var oldWin = Instance.CurrentWindow;
             Instance.CurrentWindow = __instance as GearDetailsWindow;
+            // Only reset per-window state when we actually swapped to a different gear window.
+            if (!ReferenceEquals(oldWin, Instance.CurrentWindow))
+                ArchitectUI.OnWindowChanged();
         }
 
-        private static void OnWindowClosed() { if (Instance != null) Instance.CurrentWindow = null; }
+        private static void OnWindowClosed()
+        {
+            if (Instance == null) return;
+            if (Instance.CurrentWindow != null)
+            {
+                Instance.CurrentWindow = null;
+                ArchitectUI.OnWindowChanged();
+            }
+        }
 
         private void Update()
         {

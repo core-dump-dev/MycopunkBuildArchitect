@@ -111,7 +111,7 @@ namespace MycopunkBuildArchitect
             var groups = new Dictionary<string, List<UpgradeInstance>>();
             foreach (var u in all)
             {
-                string key = "";
+                string key;
                 try { key = GetSourceId(u).ToString(); }
                 catch { key = u.Upgrade.Name; }
                 if (!groups.TryGetValue(key, out var lst)) { lst = new(); groups[key] = lst; }
@@ -147,10 +147,7 @@ namespace MycopunkBuildArchitect
 
             var ordered = SortCandidates(candidates, strategy, _requiredIds);
 
-            int simW = _hexMap.Width;
-            int simH = _hexMap.Height;
-
-            _simGrid = new SimulatedGrid(simW, simH);
+            _simGrid = new SimulatedGrid(_hexMap.Width, _hexMap.Height);
             _placedInstances.Clear();
             _currentPlacement.Clear();
             _bestPlacement.Clear();
@@ -196,8 +193,12 @@ namespace MycopunkBuildArchitect
                 missing.Add((isReq ? "★ REQUIRED: " : "") + SafeName(u) + reason);
             }
 
-            // Считаем свободные ячейки
-            int totalGridCells = _hexMap.Width * _hexMap.Height;
+            // FIX: count real active cells on the hex grid, not Width*Height
+            // (the grid can contain holes / disabled cells).
+            int totalGridCells = 0;
+            var cellIter = _hexMap.GetActiveCells();
+            while (cellIter.MoveNext()) totalGridCells++;
+
             int usedCells = 0;
             foreach (var p in placed)
             {
@@ -216,8 +217,8 @@ namespace MycopunkBuildArchitect
                 Missing = missing,
             };
 
-            UnequipAll();
-            yield return null;
+            // FIX: no trailing UnequipAll — each Solve starts with one, and Apply has its own.
+            // Halves the number of inventory churn cycles during Generate (5 strategies).
             done(variant);
         }
 
@@ -302,17 +303,29 @@ namespace MycopunkBuildArchitect
             Search(index + 1, items);
         }
 
+        /// <summary>
+        /// Single source of truth for hex-cell → grid-coordinate translation.
+        /// Extracted from the previous four copies (CanFit, Place, Remove, CanFitDummy).
+        /// </summary>
+        private static void GetWorldCoords(
+            int cellX, int cellY, int offsetX, int offsetY,
+            int patternWidth, int centerX,
+            out int x, out int y)
+        {
+            x = cellX + offsetX;
+            y = cellY + offsetY;
+            if (cellX % 2 == 1 && x % 2 == 0) y++;
+            if (centerX % 2 == 1) y++;
+            if (centerX % 2 == 1 && patternWidth / 2 % 2 == 0) y--;
+        }
+
         private bool CanFitSimulated(HexMap pattern, int offsetX, int offsetY, UpgradeInstance upg)
         {
             int centerX = offsetX + pattern.Width / 2;
             var e = pattern.GetActiveCells();
             while (e.MoveNext())
             {
-                int x = e.X + offsetX;
-                int y = e.Y + offsetY;
-                if (e.X % 2 == 1 && x % 2 == 0) y++;
-                if (centerX % 2 == 1) y++;
-                if (centerX % 2 == 1 && pattern.Width / 2 % 2 == 0) y--;
+                GetWorldCoords(e.X, e.Y, offsetX, offsetY, pattern.Width, centerX, out int x, out int y);
                 if (x < 0 || y < 0 || x >= _simGrid.Width || y >= _simGrid.Height) return false;
                 if (_simGrid.Occupied[x, y] != null) return false;
             }
@@ -330,11 +343,7 @@ namespace MycopunkBuildArchitect
             var e = pattern.GetActiveCells();
             while (e.MoveNext())
             {
-                int x = e.X + p.OffsetX;
-                int y = e.Y + p.OffsetY;
-                if (e.X % 2 == 1 && x % 2 == 0) y++;
-                if (centerX % 2 == 1) y++;
-                if (centerX % 2 == 1 && pattern.Width / 2 % 2 == 0) y--;
+                GetWorldCoords(e.X, e.Y, p.OffsetX, p.OffsetY, pattern.Width, centerX, out int x, out int y);
                 _simGrid.Occupied[x, y] = p.Instance;
             }
             _placedInstances.Add(p.Instance);
@@ -348,11 +357,7 @@ namespace MycopunkBuildArchitect
             var e = pattern.GetActiveCells();
             while (e.MoveNext())
             {
-                int x = e.X + p.OffsetX;
-                int y = e.Y + p.OffsetY;
-                if (e.X % 2 == 1 && x % 2 == 0) y++;
-                if (centerX % 2 == 1) y++;
-                if (centerX % 2 == 1 && pattern.Width / 2 % 2 == 0) y--;
+                GetWorldCoords(e.X, e.Y, p.OffsetX, p.OffsetY, pattern.Width, centerX, out int x, out int y);
                 _simGrid.Occupied[x, y] = null;
             }
             _placedInstances.Remove(p.Instance);
@@ -386,11 +391,7 @@ namespace MycopunkBuildArchitect
             var e = pattern.GetActiveCells();
             while (e.MoveNext())
             {
-                int x = e.X + offsetX;
-                int y = e.Y + offsetY;
-                if (e.X % 2 == 1 && x % 2 == 0) y++;
-                if (centerX % 2 == 1) y++;
-                if (centerX % 2 == 1 && pattern.Width / 2 % 2 == 0) y--;
+                GetWorldCoords(e.X, e.Y, offsetX, offsetY, pattern.Width, centerX, out int x, out int y);
                 if (x < 0 || y < 0 || x >= _simGrid.Width || y >= _simGrid.Height) return false;
                 if (_simGrid.Occupied[x, y] != null) return false;
             }
@@ -453,9 +454,22 @@ namespace MycopunkBuildArchitect
             {
                 case "Large first": sorted = list.OrderByDescending(SafePatternCount).ToList(); break;
                 case "Small first": sorted = list.OrderBy(SafePatternCount).ToList(); break;
-                case "Rarity first": sorted = list.OrderByDescending(u => { try { return (int)u.Upgrade.Rarity; } catch { return 0; } }).ThenByDescending(SafePatternCount).ToList(); break;
-                case "Expanders first": sorted = list.OrderByDescending(u => { try { return u.Upgrade.Name.ToLower().Contains("expand") ? 1 : 0; } catch { return 0; } }).ThenByDescending(SafePatternCount).ToList(); break;
-                case "Random": var rng = new System.Random(12345); sorted = list.OrderBy(_ => rng.Next()).ToList(); break;
+                case "Rarity first":
+                    sorted = list.OrderByDescending(u => { try { return (int)u.Upgrade.Rarity; } catch { return 0; } })
+                                 .ThenByDescending(SafePatternCount).ToList();
+                    break;
+                case "Expanders first":
+                    sorted = list.OrderByDescending(u => { try { return u.Upgrade.Name.ToLower().Contains("expand") ? 1 : 0; } catch { return 0; } })
+                                 .ThenByDescending(SafePatternCount).ToList();
+                    break;
+                case "Random":
+                    {
+                        // FIX: fixed seed made "Random" deterministic. Time-seed it so
+                        // each Generate click actually produces a different ordering.
+                        var rng = new System.Random(unchecked(Environment.TickCount * 31 + list.Count));
+                        sorted = list.OrderBy(_ => rng.Next()).ToList();
+                        break;
+                    }
                 default: sorted = list.ToList(); break;
             }
             return sorted.OrderByDescending(u => requiredIds.Contains(GetSourceId(u)) ? 1 : 0).ToList();
@@ -486,9 +500,7 @@ namespace MycopunkBuildArchitect
 
                 var descProp = t.GetProperty("Description", BindingFlags.Public | BindingFlags.Instance);
                 if (descProp != null && descProp.PropertyType == typeof(string))
-                {
                     flavor = descProp.GetValue(upg) as string ?? "";
-                }
 
                 var statMethod = t.GetMethod("GetStatList", BindingFlags.Public | BindingFlags.Instance);
                 if (statMethod != null && statMethod.ReturnType == typeof(string))
@@ -497,13 +509,9 @@ namespace MycopunkBuildArchitect
                     {
                         var parameters = statMethod.GetParameters();
                         if (parameters.Length == 2 && parameters[0].ParameterType == typeof(int) && parameters[1].ParameterType == typeof(UpgradeInstance))
-                        {
                             stats = statMethod.Invoke(upg, new object[] { u.Seed, u }) as string ?? "";
-                        }
                         else if (parameters.Length == 1 && parameters[0].ParameterType == typeof(UpgradeInstance))
-                        {
                             stats = statMethod.Invoke(upg, new object[] { u }) as string ?? "";
-                        }
                     }
                     catch { }
                 }
@@ -515,8 +523,7 @@ namespace MycopunkBuildArchitect
                     return flavor + "\n" + stats;
                 if (!string.IsNullOrEmpty(flavor)) return flavor;
                 if (!string.IsNullOrEmpty(stats)) return stats;
-
-                return ""; 
+                return "";
             }
             catch { }
             return "";
