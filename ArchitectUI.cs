@@ -7,7 +7,7 @@ namespace MycopunkBuildArchitect
     public static class ArchitectUI
     {
         private static bool _visible;
-        private static Rect _windowRect = new(30, 40, 580, 750); // Немного уменьшили высоту окна
+        private static Rect _windowRect = new(30, 40, 580, 750);
         private static Vector2 _scroll;
         private static Vector2 _scanScroll;
         private static readonly MultiLayoutManager _manager = new();
@@ -16,20 +16,64 @@ namespace MycopunkBuildArchitect
 
         private static bool _includeOuroboros = false;
         private static bool _ignoreRotationLocks = false;
-        private static bool _showScanList = true; // Новая галочка для скрытия
+        private static bool _showScanList = true;
 
         private static List<UpgradeInstance> _scannedCandidates = new();
         private static readonly Dictionary<int, bool> _requiredFlags = new();
         private static bool _scanned;
 
+        private static Texture2D _bgTex = null!;
+        private static Texture2D _boxTex = null!;
+
         public static void ToggleVisibility() => _visible = !_visible;
+
+        private static void EnsureTextures()
+        {
+            if (_bgTex == null)
+            {
+                _bgTex = new Texture2D(1, 1);
+                _bgTex.SetPixel(0, 0, new Color(0.1f, 0.1f, 0.1f, 1f));
+                _bgTex.Apply();
+            }
+            if (_boxTex == null)
+            {
+                _boxTex = new Texture2D(1, 1);
+                _boxTex.SetPixel(0, 0, new Color(0.15f, 0.15f, 0.15f, 1f));
+                _boxTex.Apply();
+            }
+        }
 
         public static void DrawIfVisible()
         {
             if (!_visible) return;
             var plugin = BuildArchitectPlugin.Instance;
             if (plugin == null || plugin.CurrentWindow == null) return;
+
+            EnsureTextures();
+
+            var prevWindow = GUI.skin.window;
+            var prevBox = GUI.skin.box;
+            var prevLabel = GUI.skin.label;
+
+            var winStyle = new GUIStyle(prevWindow);
+            winStyle.normal.background = _bgTex;
+            winStyle.onNormal.background = _bgTex;
+            winStyle.normal.textColor = Color.white;
+            GUI.skin.window = winStyle;
+
+            var boxStyle = new GUIStyle(prevBox);
+            boxStyle.normal.background = _boxTex;
+            GUI.skin.box = boxStyle;
+
+            var labelStyle = new GUIStyle(prevLabel);
+            labelStyle.normal.textColor = Color.white;
+            GUI.skin.label = labelStyle;
+
             _windowRect = GUI.Window(182742, _windowRect, DrawWindow, "BUILD ARCHITECT");
+
+            GUI.skin.window = prevWindow;
+            GUI.skin.box = prevBox;
+            GUI.skin.label = prevLabel;
         }
 
         private static void DrawWindow(int id)
@@ -38,14 +82,14 @@ namespace MycopunkBuildArchitect
             var win = BuildArchitectPlugin.Instance?.CurrentWindow;
             string gearName = "?";
             try { gearName = win?.UpgradablePrefab?.Info?.Name ?? "?"; } catch { }
-            GUILayout.Label("Gear: " + gearName);
+            
+            GUILayout.Label("<b>Gear: " + gearName + "</b>");
             GUILayout.Space(4);
 
             _includeOuroboros = GUILayout.Toggle(_includeOuroboros, " Include Ouroboros upgrades (steals from others)");
             _ignoreRotationLocks = GUILayout.Toggle(_ignoreRotationLocks, " Ignore rotation level locks (Cheat mode)");
             GUILayout.Space(4);
 
-            // Кнопка сворачивания/разворачивания списка
             if (GUILayout.Button(_showScanList ? "▼ Hide available upgrades" : "▶ Show available upgrades", GUILayout.Height(22)))
             {
                 _showScanList = !_showScanList;
@@ -61,7 +105,7 @@ namespace MycopunkBuildArchitect
                     foreach (var c in _scannedCandidates)
                         _requiredFlags[LayoutSolver.GetSourceId(c)] = false;
                     _scanned = true;
-                    _showScanList = true; // Автоматически открываем после скана
+                    _showScanList = true;
                     _status = $"Scanned {_scannedCandidates.Count} upgrade type(s).";
                 }
             }
@@ -69,7 +113,7 @@ namespace MycopunkBuildArchitect
 
             if (_scanned && _scannedCandidates.Count > 0 && _showScanList)
             {
-                GUILayout.Label($"Available ({_scannedCandidates.Count}) — mark ★ to force into layout:");
+                GUILayout.Label($"<b>Available ({_scannedCandidates.Count})</b> — mark ★ to force into layout:");
                 _scanScroll = GUILayout.BeginScrollView(_scanScroll, GUILayout.Height(200));
                 foreach (var c in _scannedCandidates)
                 {
@@ -77,12 +121,16 @@ namespace MycopunkBuildArchitect
                     bool req = _requiredFlags.TryGetValue(sid, out var v) && v;
                     string name = LayoutSolver.SafeName(c);
                     string desc = LayoutSolver.SafeDescription(c);
-                    string label = string.IsNullOrEmpty(desc) ? name : name + "  —  " + desc;
+                    string label = string.IsNullOrEmpty(desc) ? name : name + "\n    " + desc;
 
                     GUILayout.BeginHorizontal();
                     bool newReq = GUILayout.Toggle(req, req ? " ★ " : " ☐ ", GUILayout.Width(30));
-                    GUILayout.Label(label);
+                    
+                    var wrapStyle = new GUIStyle(GUI.skin.label);
+                    wrapStyle.wordWrap = true;
+                    GUILayout.Label(label, wrapStyle);
                     GUILayout.EndHorizontal();
+                    GUILayout.Space(2);
 
                     if (newReq != req) _requiredFlags[sid] = newReq;
                 }
@@ -112,9 +160,8 @@ namespace MycopunkBuildArchitect
             GUI.enabled = true;
 
             GUILayout.Space(6);
-            GUILayout.Label($"Results ({_manager.FoundVariants.Count}):");
+            GUILayout.Label($"<b>Results ({_manager.FoundVariants.Count}):</b>");
             
-            // Используем ExpandHeight, чтобы список заполнил оставшееся место в окне (убирает пустоту)
             _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
 
             if (_manager.FoundVariants.Count == 0)
@@ -123,8 +170,10 @@ namespace MycopunkBuildArchitect
             foreach (var v in _manager.FoundVariants)
             {
                 GUILayout.BeginVertical("box");
-                string reqWarn = v.RequiredMissing > 0 ? $"  ⚠ {v.RequiredMissing} REQUIRED missing" : "";
-                GUILayout.Label($"{v.Name}  [{v.Strategy}]  {v.PlacedCount}/{v.TotalCount} upgrades, {v.CellCount} cells{reqWarn}");
+                string reqWarn = v.RequiredMissing > 0 ? $"  <color=red>⚠ {v.RequiredMissing} REQUIRED missing</color>" : "";
+                
+                // Заменили "cells" на "cells free"
+                GUILayout.Label($"<b>{v.Name}  [{v.Strategy}]</b>  {v.PlacedCount}/{v.TotalCount} upgrades, {v.FreeCells} cells free{reqWarn}");
 
                 foreach (var p in v.Upgrades)
                 {
@@ -134,7 +183,7 @@ namespace MycopunkBuildArchitect
                 }
 
                 if (v.Missing.Count > 0)
-                    GUILayout.Label("  Missing: " + string.Join(", ", v.Missing));
+                    GUILayout.Label("  <color=orange>Missing: " + string.Join(", ", v.Missing) + "</color>");
 
                 GUI.enabled = !_isWorking;
                 if (GUILayout.Button("Apply this layout", GUILayout.Height(26)))
@@ -148,6 +197,7 @@ namespace MycopunkBuildArchitect
                 }
                 GUI.enabled = true;
                 GUILayout.EndVertical();
+                GUILayout.Space(4);
             }
             GUILayout.EndScrollView();
 

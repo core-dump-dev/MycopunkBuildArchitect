@@ -22,7 +22,7 @@ namespace MycopunkBuildArchitect
     {
         public string Name = "Layout";
         public string Strategy = "";
-        public int CellCount;
+        public int FreeCells;
         public int PlacedCount;
         public int TotalCount;
         public int RequiredMissing;
@@ -196,13 +196,19 @@ namespace MycopunkBuildArchitect
                 missing.Add((isReq ? "★ REQUIRED: " : "") + SafeName(u) + reason);
             }
 
-            int cellCount = 0;
-            try { cellCount = _hexMap.GetCellCount(); } catch { }
+            // Считаем свободные ячейки
+            int totalGridCells = _hexMap.Width * _hexMap.Height;
+            int usedCells = 0;
+            foreach (var p in placed)
+            {
+                try { usedCells += p.Instance.GetPattern().GetModifiedMap(p.Rotation).GetCellCount(); } catch { }
+            }
+            int freeCells = Math.Max(0, totalGridCells - usedCells);
 
             var variant = new LayoutVariant
             {
                 Strategy = strategy,
-                CellCount = cellCount,
+                FreeCells = freeCells,
                 PlacedCount = placed.Count,
                 TotalCount = ordered.Count,
                 RequiredMissing = requiredMissing,
@@ -478,20 +484,17 @@ namespace MycopunkBuildArchitect
                 string flavor = "";
                 string stats = "";
 
-                // 1. Получаем флейвор-текст (Description)
                 var descProp = t.GetProperty("Description", BindingFlags.Public | BindingFlags.Instance);
                 if (descProp != null && descProp.PropertyType == typeof(string))
                 {
                     flavor = descProp.GetValue(upg) as string ?? "";
                 }
 
-                // 2. Получаем статы через метод GetStatList(Int32, UpgradeInstance)
                 var statMethod = t.GetMethod("GetStatList", BindingFlags.Public | BindingFlags.Instance);
                 if (statMethod != null && statMethod.ReturnType == typeof(string))
                 {
                     try
                     {
-                        // Метод принимает (Seed, UpgradeInstance)
                         var parameters = statMethod.GetParameters();
                         if (parameters.Length == 2 && parameters[0].ParameterType == typeof(int) && parameters[1].ParameterType == typeof(UpgradeInstance))
                         {
@@ -505,7 +508,6 @@ namespace MycopunkBuildArchitect
                     catch { }
                 }
 
-                // 3. Склеиваем: сверху флейвор-текст, снизу статы
                 flavor = StripTags(flavor).Trim();
                 stats = StripTags(stats).Trim();
 
