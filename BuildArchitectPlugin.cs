@@ -8,11 +8,14 @@ using UnityEngine.InputSystem;
 namespace MycopunkBuildArchitect
 {
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
+    // ИСПРАВЛЕНО: Атрибут вешается на класс, а не на сборку. 
+    // Первый аргумент null, второй - ModFlags.IsClientSide
+    [MycoMod(null, ModFlags.IsClientSide)]
     public sealed class BuildArchitectPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "mycopunk.buildarchitect";
         public const string PluginName = "Mycopunk Build Architect";
-        public const string PluginVersion = "0.3.1";
+        public const string PluginVersion = "0.3.2";
 
         internal static ManualLogSource Log = null!;
         internal static BuildArchitectPlugin? Instance { get; private set; }
