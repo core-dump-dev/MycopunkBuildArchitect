@@ -60,6 +60,11 @@ namespace MycopunkBuildArchitect
         private int _nodeCount;
         private HashSet<UpgradeInstance> _placedInstances = new();
 
+        // ---------- caches (per solver instance, reused across strategies) ----------
+        private readonly Dictionary<UpgradeInstance, int> _sourceIdCache = new();
+        private readonly Dictionary<UpgradeInstance, bool> _requiredCache = new();
+        private int[] _requiredSuffix = Array.Empty<int>();
+
         public LayoutSolver(IUpgradable gear, ModuleEquipSlots equipSlots, Action onUpgradesChanged,
                             bool includeOuroboros, bool ignoreRotationLocks, bool ouroMode,
                             HashSet<int>? requiredIds = null, HashSet<int>? excludedIds = null)
@@ -76,15 +81,27 @@ namespace MycopunkBuildArchitect
             try { _global = Global.Instance; } catch { _global = null; }
         }
 
+        private int GetSourceIdCached(UpgradeInstance u)
+        {
+            if (_sourceIdCache.TryGetValue(u, out int id)) return id;
+            id = GetSourceId(u);
+            _sourceIdCache[u] = id;
+            return id;
+        }
+
+        private bool IsRequired(UpgradeInstance u)
+        {
+            if (_requiredCache.TryGetValue(u, out bool req)) return req;
+            req = _requiredIds.Contains(GetSourceIdCached(u));
+            _requiredCache[u] = req;
+            return req;
+        }
+
         public List<UpgradeInstance> CollectCandidates()
         {
             var result = new List<UpgradeInstance>();
             CollectFrom(_gear, result);
 
-            // Global.Instance contains the Ouroboros-side upgrades. It's only meaningful
-            // for the Character slot (matches OuroGearWindow.SetupUpgrades).
-            // - In Ouro mode: always include (that's what the window shows).
-            // - In hub mode: only when the user opted in.
             bool wantGlobal = _gear is Character && _global != null
                               && (_ouroMode || _includeOuroboros)
                               && PlayerData.HasUpgrades(_global);
@@ -104,9 +121,6 @@ namespace MycopunkBuildArchitect
                     var inst = e.Upgrade;
                     if (inst == null) continue;
 
-                    // Filter matches what the corresponding window shows.
-                    // OuroGearWindow.AddUpgrade: keep only RemoveAfterMission == true.
-                    // GearDetailsWindow:         permanent upgrades only.
                     if (_ouroMode)
                     {
                         if (!inst.RemoveAfterMission) continue;
@@ -136,7 +150,7 @@ namespace MycopunkBuildArchitect
             foreach (var u in all)
             {
                 string key;
-                try { key = GetSourceId(u).ToString(); }
+                try { key = GetSourceIdCached(u).ToString(); }
                 catch { key = u.Upgrade.Name; }
                 if (!groups.TryGetValue(key, out var lst)) { lst = new(); groups[key] = lst; }
                 lst.Add(u);
@@ -166,7 +180,8 @@ namespace MycopunkBuildArchitect
 
         public IEnumerator Solve(string strategy, List<UpgradeInstance> candidates, Action<LayoutVariant> done)
         {
-            UnequipAll();
+            // NOTE: no UnequipAll here. Simulation starts from an empty grid anyway,
+            // and modifying the real game state 5 times (once per strategy) is what was causing hitches.
             yield return null;
 
             List<UpgradeInstance> filtered;
@@ -174,7 +189,7 @@ namespace MycopunkBuildArchitect
             {
                 filtered = new List<UpgradeInstance>(candidates.Count);
                 foreach (var u in candidates)
-                    if (!_excludedIds.Contains(GetSourceId(u)))
+                    if (!_excludedIds.Contains(GetSourceIdCached(u)))
                         filtered.Add(u);
             }
             else
@@ -182,7 +197,7 @@ namespace MycopunkBuildArchitect
                 filtered = candidates;
             }
 
-            var ordered = SortCandidates(filtered, strategy, _requiredIds);
+            var ordered = SortCandidates(filtered, strategy, _requiredIds, this);
 
             _simGrid = new SimulatedGrid(_hexMap.Width, _hexMap.Height);
             _placedInstances.Clear();
@@ -192,6 +207,11 @@ namespace MycopunkBuildArchitect
             _maxReq = 0;
             _currentReq = 0;
             _nodeCount = 0;
+
+            // Precompute required-suffix once: O(N) → O(1) bound check per node.
+            _requiredSuffix = new int[ordered.Count + 1];
+            for (int i = ordered.Count - 1; i >= 0; i--)
+                _requiredSuffix[i] = _requiredSuffix[i + 1] + (IsRequired(ordered[i]) ? 1 : 0);
 
             Search(0, ordered);
 
@@ -211,7 +231,7 @@ namespace MycopunkBuildArchitect
             foreach (var u in ordered)
             {
                 if (placedSet.Contains(u)) continue;
-                bool isReq = _requiredIds.Contains(GetSourceId(u));
+                bool isReq = IsRequired(u);
                 if (isReq) requiredMissing++;
 
                 bool canRotate = _ignoreRotationLocks;
@@ -271,12 +291,9 @@ namespace MycopunkBuildArchitect
                 return;
             }
 
-            int remaining = items.Count - index;
-            int requiredRemaining = 0;
-            for (int i = index; i < items.Count; i++)
-                if (_requiredIds.Contains(GetSourceId(items[i]))) requiredRemaining++;
-            int maxPossibleReq = _currentReq + requiredRemaining;
-            int maxPossibleTotal = _currentPlacement.Count + remaining;
+            // O(1) bound check using precomputed suffix sums.
+            int maxPossibleReq = _currentReq + _requiredSuffix[index];
+            int maxPossibleTotal = _currentPlacement.Count + (items.Count - index);
             if (maxPossibleReq < _maxReq) return;
             if (maxPossibleReq == _maxReq && maxPossibleTotal <= _maxPlaced) return;
 
@@ -376,7 +393,7 @@ namespace MycopunkBuildArchitect
                 _simGrid.Occupied[x, y] = p.Instance;
             }
             _placedInstances.Add(p.Instance);
-            if (_requiredIds.Contains(GetSourceId(p.Instance))) _currentReq++;
+            if (IsRequired(p.Instance)) _currentReq++;
         }
 
         private void RemoveSimulated(PlacedUpgrade p)
@@ -390,7 +407,7 @@ namespace MycopunkBuildArchitect
                 _simGrid.Occupied[x, y] = null;
             }
             _placedInstances.Remove(p.Instance);
-            if (_requiredIds.Contains(GetSourceId(p.Instance))) _currentReq--;
+            if (IsRequired(p.Instance)) _currentReq--;
         }
 
         private bool WouldFitWithRotation(HexMap pattern, int rotation)
@@ -476,7 +493,8 @@ namespace MycopunkBuildArchitect
             return u.InstanceID;
         }
 
-        private static List<UpgradeInstance> SortCandidates(List<UpgradeInstance> list, string strategy, HashSet<int> requiredIds)
+        private static List<UpgradeInstance> SortCandidates(
+            List<UpgradeInstance> list, string strategy, HashSet<int> requiredIds, LayoutSolver self)
         {
             List<UpgradeInstance> sorted;
             switch (strategy)
@@ -499,7 +517,7 @@ namespace MycopunkBuildArchitect
                     }
                 default: sorted = list.ToList(); break;
             }
-            return sorted.OrderByDescending(u => requiredIds.Contains(GetSourceId(u)) ? 1 : 0).ToList();
+            return sorted.OrderByDescending(u => self.IsRequired(u) ? 1 : 0).ToList();
         }
 
         private static int SafePatternCount(UpgradeInstance u)

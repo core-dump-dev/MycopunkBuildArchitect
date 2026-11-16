@@ -15,6 +15,9 @@ namespace MycopunkBuildArchitect
         {
             public List<UpgradeInstance> ScannedCandidates = new();
             public Dictionary<int, UpgradeMark> Marks = new();
+            // Cached name/description — refreshed only on Scan, not every OnGUI frame.
+            public Dictionary<UpgradeInstance, string> NameCache = new();
+            public Dictionary<UpgradeInstance, string> DescCache = new();
             public bool Scanned;
             public Vector2 Scroll;
             public Vector2 ScanScroll;
@@ -179,12 +182,7 @@ namespace MycopunkBuildArchitect
                 if (win != null)
                 {
                     st.ScannedCandidates = ScanCandidates(win);
-                    foreach (var c in st.ScannedCandidates)
-                    {
-                        int sourceId = LayoutSolver.GetSourceId(c);
-                        if (!st.Marks.ContainsKey(sourceId))
-                            st.Marks[sourceId] = UpgradeMark.None;
-                    }
+                    RefreshCaches(st);
                     st.Scanned = true;
                     _showScanList = true;
                     st.Status = $"Scanned {st.ScannedCandidates.Count} upgrade type(s).";
@@ -202,8 +200,9 @@ namespace MycopunkBuildArchitect
                     if (!st.Marks.TryGetValue(sid, out var mark)) mark = UpgradeMark.None;
                     var currentMark = mark;
 
-                    string name = LayoutSolver.SafeName(c);
-                    string desc = LayoutSolver.SafeDescription(c);
+                    // Cached — no reflection per frame.
+                    string name = st.NameCache.TryGetValue(c, out var n) ? n : LayoutSolver.SafeName(c);
+                    string desc = st.DescCache.TryGetValue(c, out var d) ? d : LayoutSolver.SafeDescription(c);
                     string label = string.IsNullOrEmpty(desc) ? name : name + "\n    " + desc;
 
                     string toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
@@ -256,11 +255,7 @@ namespace MycopunkBuildArchitect
                     if (!st.Scanned)
                     {
                         st.ScannedCandidates = ScanCandidates(win);
-                        foreach (var c in st.ScannedCandidates)
-                        {
-                            int sid = LayoutSolver.GetSourceId(c);
-                            if (!st.Marks.ContainsKey(sid)) st.Marks[sid] = UpgradeMark.None;
-                        }
+                        RefreshCaches(st);
                         st.Scanned = true;
                     }
 
@@ -317,6 +312,19 @@ namespace MycopunkBuildArchitect
 
             GUILayout.EndVertical();
             GUI.DragWindow(new Rect(0, 0, 10000, 24));
+        }
+
+        private static void RefreshCaches(GearState st)
+        {
+            st.NameCache.Clear();
+            st.DescCache.Clear();
+            foreach (var c in st.ScannedCandidates)
+            {
+                int sid = LayoutSolver.GetSourceId(c);
+                if (!st.Marks.ContainsKey(sid)) st.Marks[sid] = UpgradeMark.None;
+                st.NameCache[c] = LayoutSolver.SafeName(c);
+                st.DescCache[c] = LayoutSolver.SafeDescription(c);
+            }
         }
 
         private static List<UpgradeInstance> ScanCandidates(Window win)
