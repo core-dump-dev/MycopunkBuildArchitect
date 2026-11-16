@@ -9,11 +9,13 @@ namespace MycopunkBuildArchitect
         public static readonly string[] Strategies = { "Expanders first", "Large first", "Small first", "Rarity first", "Random" };
         public List<LayoutVariant> FoundVariants { get; } = new();
 
-        public IEnumerator GenerateVariants(GearDetailsWindow window, bool includeOuroboros, bool ignoreRotationLocks, HashSet<int> requiredIds, Action onDone)
+        public IEnumerator GenerateVariants(
+            GearDetailsWindow window, bool includeOuroboros, bool ignoreRotationLocks,
+            HashSet<int> requiredIds, HashSet<int> excludedIds, Action onDone)
         {
             FoundVariants.Clear();
             LayoutSolver solver;
-            try { solver = new LayoutSolver(window, includeOuroboros, ignoreRotationLocks, requiredIds); }
+            try { solver = new LayoutSolver(window, includeOuroboros, ignoreRotationLocks, requiredIds, excludedIds); }
             catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Solver init failed: " + ex); onDone(); yield break; }
 
             var candidates = solver.CollectCandidates();
@@ -21,6 +23,15 @@ namespace MycopunkBuildArchitect
             if (picked.Count == 0)
             {
                 BuildArchitectPlugin.Log.LogWarning("No candidate upgrades found.");
+                onDone(); yield break;
+            }
+
+            bool anyUsable = false;
+            foreach (var u in picked)
+                if (!excludedIds.Contains(LayoutSolver.GetSourceId(u))) { anyUsable = true; break; }
+            if (!anyUsable)
+            {
+                BuildArchitectPlugin.Log.LogWarning("All candidate upgrades are excluded.");
                 onDone(); yield break;
             }
 

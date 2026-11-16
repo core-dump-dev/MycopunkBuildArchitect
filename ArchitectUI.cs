@@ -7,11 +7,13 @@ namespace MycopunkBuildArchitect
 {
     public static class ArchitectUI
     {
+        private enum UpgradeMark { None, Required, Excluded }
+
         /// <summary>Per-gear UI/session state. One per weapon, persists across window switches.</summary>
         private sealed class GearState
         {
             public List<UpgradeInstance> ScannedCandidates = new();
-            public Dictionary<int, bool> RequiredFlags = new();
+            public Dictionary<int, UpgradeMark> Marks = new();
             public bool Scanned;
             public Vector2 Scroll;
             public Vector2 ScanScroll;
@@ -38,6 +40,7 @@ namespace MycopunkBuildArchitect
         private static GUIStyle? _boxStyle;
         private static GUIStyle? _labelStyle;
         private static GUIStyle? _wrapStyle;
+        private static GUIStyle? _excludedStyle;
 
         public static void ToggleVisibility() => _visible = !_visible;
 
@@ -61,6 +64,7 @@ namespace MycopunkBuildArchitect
             _boxStyle = null;
             _labelStyle = null;
             _wrapStyle = null;
+            _excludedStyle = null;
         }
 
         private static void EnsureTextures()
@@ -103,6 +107,12 @@ namespace MycopunkBuildArchitect
                 _wrapStyle = new GUIStyle(GUI.skin.label);
                 _wrapStyle.wordWrap = true;
                 _wrapStyle.normal.textColor = Color.white;
+            }
+            if (_excludedStyle == null)
+            {
+                _excludedStyle = new GUIStyle(GUI.skin.label);
+                _excludedStyle.wordWrap = true;
+                _excludedStyle.normal.textColor = new Color(0.55f, 0.55f, 0.55f, 1f);
             }
         }
 
@@ -155,12 +165,12 @@ namespace MycopunkBuildArchitect
                 if (win != null)
                 {
                     st.ScannedCandidates = ScanCandidates(win);
-                    // Preserve ★ selections — only seed new IDs.
+                    // Preserve existing marks — only seed new IDs.
                     foreach (var c in st.ScannedCandidates)
                     {
                         int sourceId = LayoutSolver.GetSourceId(c);
-                        if (!st.RequiredFlags.ContainsKey(sourceId))
-                            st.RequiredFlags[sourceId] = false;
+                        if (!st.Marks.ContainsKey(sourceId))
+                            st.Marks[sourceId] = UpgradeMark.None;
                     }
                     st.Scanned = true;
                     _showScanList = true;
@@ -171,23 +181,46 @@ namespace MycopunkBuildArchitect
 
             if (st.Scanned && st.ScannedCandidates.Count > 0 && _showScanList)
             {
-                GUILayout.Label($"<b>Available ({st.ScannedCandidates.Count})</b> — mark ★ to force into layout:");
+                GUILayout.Label($"<b>Available ({st.ScannedCandidates.Count})</b> — LMB toggle ★ required, RMB toggle ✕ excluded:");
                 st.ScanScroll = GUILayout.BeginScrollView(st.ScanScroll, GUILayout.Height(200));
                 foreach (var c in st.ScannedCandidates)
                 {
                     int sid = LayoutSolver.GetSourceId(c);
-                    bool req = st.RequiredFlags.TryGetValue(sid, out var v) && v;
+                    if (!st.Marks.TryGetValue(sid, out var mark)) mark = UpgradeMark.None;
+
                     string name = LayoutSolver.SafeName(c);
                     string desc = LayoutSolver.SafeDescription(c);
                     string label = string.IsNullOrEmpty(desc) ? name : name + "\n    " + desc;
 
-                    GUILayout.BeginHorizontal();
-                    bool newReq = GUILayout.Toggle(req, req ? " ★ " : " ☐ ", GUILayout.Width(30));
-                    GUILayout.Label(label, _wrapStyle!);
-                    GUILayout.EndHorizontal();
-                    GUILayout.Space(2);
+                    var currentMark = mark;
+                    string toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
+                                       : currentMark == UpgradeMark.Excluded ? " ✕ "
+                                       : " ☐ ";
 
-                    if (newReq != req) st.RequiredFlags[sid] = newReq;
+                    GUILayout.BeginHorizontal();
+                    if (GUILayout.Button(toggleLabel, GUILayout.Width(30)))
+                    {
+                        currentMark = currentMark == UpgradeMark.Required
+                            ? UpgradeMark.None
+                            : UpgradeMark.Required;
+                        st.Marks[sid] = currentMark;
+                    }
+                    GUILayout.Label(label, currentMark == UpgradeMark.Excluded ? _excludedStyle! : _wrapStyle!);
+                    GUILayout.EndHorizontal();
+
+                    // Right-click anywhere on the row toggles exclusion.
+                    Rect rowRect = GUILayoutUtility.GetLastRect();
+                    var ev = Event.current;
+                    if (ev.type == EventType.MouseDown && ev.button == 1 && rowRect.Contains(ev.mousePosition))
+                    {
+                        currentMark = currentMark == UpgradeMark.Excluded
+                            ? UpgradeMark.None
+                            : UpgradeMark.Excluded;
+                        st.Marks[sid] = currentMark;
+                        ev.Use();
+                    }
+
+                    GUILayout.Space(2);
                 }
                 GUILayout.EndScrollView();
             }
@@ -204,7 +237,7 @@ namespace MycopunkBuildArchitect
                         foreach (var c in st.ScannedCandidates)
                         {
                             int sid = LayoutSolver.GetSourceId(c);
-                            if (!st.RequiredFlags.ContainsKey(sid)) st.RequiredFlags[sid] = false;
+                            if (!st.Marks.ContainsKey(sid)) st.Marks[sid] = UpgradeMark.None;
                         }
                         st.Scanned = true;
                     }
@@ -279,11 +312,19 @@ namespace MycopunkBuildArchitect
             }
         }
 
-        private static HashSet<int> BuildRequiredSet(Dictionary<int, bool> flags)
+        private static HashSet<int> BuildRequiredSet(Dictionary<int, UpgradeMark> marks)
         {
             var set = new HashSet<int>();
-            foreach (var kv in flags)
-                if (kv.Value) set.Add(kv.Key);
+            foreach (var kv in marks)
+                if (kv.Value == UpgradeMark.Required) set.Add(kv.Key);
+            return set;
+        }
+
+        private static HashSet<int> BuildExcludedSet(Dictionary<int, UpgradeMark> marks)
+        {
+            var set = new HashSet<int>();
+            foreach (var kv in marks)
+                if (kv.Value == UpgradeMark.Excluded) set.Add(kv.Key);
             return set;
         }
 
@@ -292,9 +333,12 @@ namespace MycopunkBuildArchitect
             yield return null;
             try
             {
-                var required = BuildRequiredSet(st.RequiredFlags);
+                var required = BuildRequiredSet(st.Marks);
+                var excluded = BuildExcludedSet(st.Marks);
                 bool done = false;
-                var routine = st.Manager.GenerateVariants(win, _includeOuroboros, _ignoreRotationLocks, required, () => done = true);
+                var routine = st.Manager.GenerateVariants(
+                    win, _includeOuroboros, _ignoreRotationLocks,
+                    required, excluded, () => done = true);
                 while (!done)
                 {
                     object? cur = null;
@@ -304,7 +348,8 @@ namespace MycopunkBuildArchitect
                     if (!has) break;
                     yield return cur;
                 }
-                st.Status = $"Done. {st.Manager.FoundVariants.Count} layout(s) generated ({required.Count} required).";
+                st.Status = $"Done. {st.Manager.FoundVariants.Count} layout(s) generated " +
+                            $"({required.Count} required, {excluded.Count} excluded).";
             }
             finally
             {

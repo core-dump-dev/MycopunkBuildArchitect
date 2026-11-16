@@ -51,6 +51,7 @@ namespace MycopunkBuildArchitect
         private readonly bool _includeOuroboros;
         private readonly bool _ignoreRotationLocks;
         private readonly HashSet<int> _requiredIds;
+        private readonly HashSet<int> _excludedIds;
 
         private SimulatedGrid _simGrid = null!;
         private List<PlacedUpgrade> _bestPlacement = new();
@@ -61,7 +62,8 @@ namespace MycopunkBuildArchitect
         private int _nodeCount;
         private HashSet<UpgradeInstance> _placedInstances = new();
 
-        public LayoutSolver(GearDetailsWindow window, bool includeOuroboros, bool ignoreRotationLocks, HashSet<int>? requiredIds = null)
+        public LayoutSolver(GearDetailsWindow window, bool includeOuroboros, bool ignoreRotationLocks,
+                            HashSet<int>? requiredIds = null, HashSet<int>? excludedIds = null)
         {
             _window = window;
             _equipSlots = (ModuleEquipSlots)EquipSlotsField.GetValue(window);
@@ -70,6 +72,7 @@ namespace MycopunkBuildArchitect
             _includeOuroboros = includeOuroboros;
             _ignoreRotationLocks = ignoreRotationLocks;
             _requiredIds = requiredIds ?? new HashSet<int>();
+            _excludedIds = excludedIds ?? new HashSet<int>();
             try { _global = Global.Instance; } catch { _global = null; }
         }
 
@@ -145,7 +148,21 @@ namespace MycopunkBuildArchitect
             UnequipAll();
             yield return null;
 
-            var ordered = SortCandidates(candidates, strategy, _requiredIds);
+            // Excluded upgrades never enter the search.
+            List<UpgradeInstance> filtered;
+            if (_excludedIds.Count > 0)
+            {
+                filtered = new List<UpgradeInstance>(candidates.Count);
+                foreach (var u in candidates)
+                    if (!_excludedIds.Contains(GetSourceId(u)))
+                        filtered.Add(u);
+            }
+            else
+            {
+                filtered = candidates;
+            }
+
+            var ordered = SortCandidates(filtered, strategy, _requiredIds);
 
             _simGrid = new SimulatedGrid(_hexMap.Width, _hexMap.Height);
             _placedInstances.Clear();
@@ -193,7 +210,7 @@ namespace MycopunkBuildArchitect
                 missing.Add((isReq ? "★ REQUIRED: " : "") + SafeName(u) + reason);
             }
 
-            // FIX: count real active cells on the hex grid, not Width*Height
+            // Count real active cells on the hex grid, not Width*Height
             // (the grid can contain holes / disabled cells).
             int totalGridCells = 0;
             var cellIter = _hexMap.GetActiveCells();
@@ -217,8 +234,6 @@ namespace MycopunkBuildArchitect
                 Missing = missing,
             };
 
-            // FIX: no trailing UnequipAll — each Solve starts with one, and Apply has its own.
-            // Halves the number of inventory churn cycles during Generate (5 strategies).
             done(variant);
         }
 
@@ -305,7 +320,6 @@ namespace MycopunkBuildArchitect
 
         /// <summary>
         /// Single source of truth for hex-cell → grid-coordinate translation.
-        /// Extracted from the previous four copies (CanFit, Place, Remove, CanFitDummy).
         /// </summary>
         private static void GetWorldCoords(
             int cellX, int cellY, int offsetX, int offsetY,
@@ -464,8 +478,7 @@ namespace MycopunkBuildArchitect
                     break;
                 case "Random":
                     {
-                        // FIX: fixed seed made "Random" deterministic. Time-seed it so
-                        // each Generate click actually produces a different ordering.
+                        // Time-seeded so each Generate click produces a different ordering.
                         var rng = new System.Random(unchecked(Environment.TickCount * 31 + list.Count));
                         sorted = list.OrderBy(_ => rng.Next()).ToList();
                         break;
