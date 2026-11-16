@@ -181,37 +181,33 @@ namespace MycopunkBuildArchitect
 
             if (st.Scanned && st.ScannedCandidates.Count > 0 && _showScanList)
             {
-                GUILayout.Label($"<b>Available ({st.ScannedCandidates.Count})</b> — LMB toggle ★ required, RMB toggle ✕ excluded:");
+                GUILayout.Label($"<b>Available ({st.ScannedCandidates.Count})</b> — LMB on checkbox = ★ required, RMB on checkbox = ✕ excluded:");
                 st.ScanScroll = GUILayout.BeginScrollView(st.ScanScroll, GUILayout.Height(200));
                 foreach (var c in st.ScannedCandidates)
                 {
                     int sid = LayoutSolver.GetSourceId(c);
                     if (!st.Marks.TryGetValue(sid, out var mark)) mark = UpgradeMark.None;
+                    var currentMark = mark;
 
                     string name = LayoutSolver.SafeName(c);
                     string desc = LayoutSolver.SafeDescription(c);
                     string label = string.IsNullOrEmpty(desc) ? name : name + "\n    " + desc;
 
-                    var currentMark = mark;
                     string toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
                                        : currentMark == UpgradeMark.Excluded ? " ✕ "
                                        : " ☐ ";
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button(toggleLabel, GUILayout.Width(30)))
-                    {
-                        currentMark = currentMark == UpgradeMark.Required
-                            ? UpgradeMark.None
-                            : UpgradeMark.Required;
-                        st.Marks[sid] = currentMark;
-                    }
-                    GUILayout.Label(label, currentMark == UpgradeMark.Excluded ? _excludedStyle! : _wrapStyle!);
-                    GUILayout.EndHorizontal();
 
-                    // Right-click anywhere on the row toggles exclusion.
-                    Rect rowRect = GUILayoutUtility.GetLastRect();
+                    // Reserve the button rect *before* drawing so we can hit-test it
+                    // deterministically (GetLastRect after EndHorizontal is unreliable).
+                    Rect btnRect = GUILayoutUtility.GetRect(
+                        new GUIContent(toggleLabel), GUI.skin.button, GUILayout.Width(30));
+
                     var ev = Event.current;
-                    if (ev.type == EventType.MouseDown && ev.button == 1 && rowRect.Contains(ev.mousePosition))
+
+                    // RMB only counts when it lands on the checkbox button itself.
+                    if (ev.type == EventType.MouseDown && ev.button == 1 && btnRect.Contains(ev.mousePosition))
                     {
                         currentMark = currentMark == UpgradeMark.Excluded
                             ? UpgradeMark.None
@@ -219,6 +215,25 @@ namespace MycopunkBuildArchitect
                         st.Marks[sid] = currentMark;
                         ev.Use();
                     }
+
+                    // Recompute displayed toggle in case RMB just changed the mark.
+                    toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
+                                : currentMark == UpgradeMark.Excluded ? " ✕ "
+                                : " ☐ ";
+
+                    bool lmb = GUI.Button(btnRect, toggleLabel);
+                    // Guard against a stray RMB-originated "true" from Button:
+                    // only treat the release as LMB when it really is button 0.
+                    if (lmb && ev.button == 0)
+                    {
+                        currentMark = currentMark == UpgradeMark.Required
+                            ? UpgradeMark.None
+                            : UpgradeMark.Required;
+                        st.Marks[sid] = currentMark;
+                    }
+
+                    GUILayout.Label(label, currentMark == UpgradeMark.Excluded ? _excludedStyle! : _wrapStyle!);
+                    GUILayout.EndHorizontal();
 
                     GUILayout.Space(2);
                 }
