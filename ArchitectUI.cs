@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using Pigeon.UI;
 using UnityEngine;
+using Rect = UnityEngine.Rect;
 
 namespace MycopunkBuildArchitect
 {
@@ -9,7 +11,6 @@ namespace MycopunkBuildArchitect
     {
         private enum UpgradeMark { None, Required, Excluded }
 
-        /// <summary>Per-gear UI/session state. One per weapon, persists across window switches.</summary>
         private sealed class GearState
         {
             public List<UpgradeInstance> ScannedCandidates = new();
@@ -23,13 +24,11 @@ namespace MycopunkBuildArchitect
         }
 
         private static bool _visible;
-        private static Rect _windowRect = new(30, 40, 580, 750);
+        private static Rect _windowRect = new(30, 40, 580, 780);
 
-        // Weak table: state dies with the gear instance. Same weapon = same state.
         private static readonly ConditionalWeakTable<IUpgradable, GearState> _gearStates = new();
         private static readonly GearState _fallbackState = new();
 
-        // These options are user preferences, not per-gear.
         private static bool _includeOuroboros = false;
         private static bool _ignoreRotationLocks = false;
         private static bool _showScanList = true;
@@ -49,8 +48,7 @@ namespace MycopunkBuildArchitect
             get
             {
                 var win = BuildArchitectPlugin.Instance?.CurrentWindow;
-                IUpgradable? gear = null;
-                try { gear = win?.UpgradablePrefab; } catch { }
+                IUpgradable? gear = BuildArchitectPlugin.GetGear(win);
                 if (gear == null) return _fallbackState;
                 return _gearStates.GetValue(gear, _ => new GearState());
             }
@@ -60,11 +58,7 @@ namespace MycopunkBuildArchitect
         {
             if (_bgTex != null) { Object.Destroy(_bgTex); _bgTex = null; }
             if (_boxTex != null) { Object.Destroy(_boxTex); _boxTex = null; }
-            _winStyle = null;
-            _boxStyle = null;
-            _labelStyle = null;
-            _wrapStyle = null;
-            _excludedStyle = null;
+            _winStyle = null; _boxStyle = null; _labelStyle = null; _wrapStyle = null; _excludedStyle = null;
         }
 
         private static void EnsureTextures()
@@ -144,17 +138,37 @@ namespace MycopunkBuildArchitect
         {
             var st = CurrentState;
             var win = BuildArchitectPlugin.Instance?.CurrentWindow;
+            bool isOuro = BuildArchitectPlugin.IsOuroWindow(win);
 
             GUILayout.BeginVertical();
             string gearName = "?";
-            try { gearName = win?.UpgradablePrefab?.Info?.Name ?? "?"; } catch { }
+            string windowName = "?";
+            try
+            {
+                gearName = BuildArchitectPlugin.GetGear(win)?.Info?.Name ?? "?";
+                windowName = win?.GetType().Name ?? "?";
+            }
+            catch { }
 
-            GUILayout.Label("<b>Gear: " + gearName + "</b>");
+            GUILayout.Label($"<b>Gear: {gearName}</b>  <i>({windowName})</i>");
             GUILayout.Space(4);
 
-            _includeOuroboros = GUILayout.Toggle(_includeOuroboros, " Include Ouroboros upgrades (steals from others)");
+            if (isOuro)
+            {
+                GUILayout.Label("<color=cyan><b>Ouroboros mode</b> — only temporary mission upgrades are shown (matches the game's list).</color>");
+            }
+            else
+            {
+                _includeOuroboros = GUILayout.Toggle(_includeOuroboros, " Include Ouroboros upgrades (steals from others)");
+            }
             _ignoreRotationLocks = GUILayout.Toggle(_ignoreRotationLocks, " Ignore rotation level locks (Cheat mode)");
             GUILayout.Space(4);
+
+            if (BuildArchitectPlugin.IsOuroAutoApply(win))
+            {
+                GUILayout.Label("<color=red>⚠ Ouroboros Auto-Apply is ON — manual placement is disabled by the game. Disable it in game settings.</color>");
+                GUILayout.Space(4);
+            }
 
             if (GUILayout.Button(_showScanList ? "▼ Hide available upgrades" : "▶ Show available upgrades", GUILayout.Height(22)))
                 _showScanList = !_showScanList;
@@ -165,7 +179,6 @@ namespace MycopunkBuildArchitect
                 if (win != null)
                 {
                     st.ScannedCandidates = ScanCandidates(win);
-                    // Preserve existing marks — only seed new IDs.
                     foreach (var c in st.ScannedCandidates)
                     {
                         int sourceId = LayoutSolver.GetSourceId(c);
@@ -199,14 +212,11 @@ namespace MycopunkBuildArchitect
 
                     GUILayout.BeginHorizontal();
 
-                    // Reserve the button rect *before* drawing so we can hit-test it
-                    // deterministically (GetLastRect after EndHorizontal is unreliable).
                     Rect btnRect = GUILayoutUtility.GetRect(
                         new GUIContent(toggleLabel), GUI.skin.button, GUILayout.Width(30));
 
                     var ev = Event.current;
 
-                    // RMB only counts when it lands on the checkbox button itself.
                     if (ev.type == EventType.MouseDown && ev.button == 1 && btnRect.Contains(ev.mousePosition))
                     {
                         currentMark = currentMark == UpgradeMark.Excluded
@@ -216,14 +226,11 @@ namespace MycopunkBuildArchitect
                         ev.Use();
                     }
 
-                    // Recompute displayed toggle in case RMB just changed the mark.
                     toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
                                 : currentMark == UpgradeMark.Excluded ? " ✕ "
                                 : " ☐ ";
 
                     bool lmb = GUI.Button(btnRect, toggleLabel);
-                    // Guard against a stray RMB-originated "true" from Button:
-                    // only treat the release as LMB when it really is button 0.
                     if (lmb && ev.button == 0)
                     {
                         currentMark = currentMark == UpgradeMark.Required
@@ -312,11 +319,19 @@ namespace MycopunkBuildArchitect
             GUI.DragWindow(new Rect(0, 0, 10000, 24));
         }
 
-        private static List<UpgradeInstance> ScanCandidates(GearDetailsWindow win)
+        private static List<UpgradeInstance> ScanCandidates(Window win)
         {
             try
             {
-                var solver = new LayoutSolver(win, _includeOuroboros, _ignoreRotationLocks);
+                var gear = BuildArchitectPlugin.GetGear(win);
+                var slots = BuildArchitectPlugin.GetEquipSlots(win);
+                if (gear == null || slots == null)
+                {
+                    BuildArchitectPlugin.Log.LogWarning("ScanCandidates: gear or slots unavailable.");
+                    return new List<UpgradeInstance>();
+                }
+                bool ouroMode = BuildArchitectPlugin.IsOuroWindow(win);
+                var solver = new LayoutSolver(gear, slots, () => { }, _includeOuroboros, _ignoreRotationLocks, ouroMode);
                 var all = solver.CollectCandidates();
                 return solver.PickForLayout(all);
             }
@@ -343,16 +358,27 @@ namespace MycopunkBuildArchitect
             return set;
         }
 
-        private static IEnumerator RunGenerate(GearDetailsWindow win, GearState st)
+        private static IEnumerator RunGenerate(Window win, GearState st)
         {
             yield return null;
             try
             {
+                var gear = BuildArchitectPlugin.GetGear(win);
+                var slots = BuildArchitectPlugin.GetEquipSlots(win);
+                if (gear == null || slots == null)
+                {
+                    st.Status = "Cannot generate: gear or equip slots unavailable.";
+                    yield break;
+                }
+
+                bool ouroMode = BuildArchitectPlugin.IsOuroWindow(win);
                 var required = BuildRequiredSet(st.Marks);
                 var excluded = BuildExcludedSet(st.Marks);
                 bool done = false;
                 var routine = st.Manager.GenerateVariants(
-                    win, _includeOuroboros, _ignoreRotationLocks,
+                    gear, slots,
+                    () => BuildArchitectPlugin.NotifyUpgradesChanged(win),
+                    _includeOuroboros, _ignoreRotationLocks, ouroMode,
                     required, excluded, () => done = true);
                 while (!done)
                 {
@@ -372,17 +398,28 @@ namespace MycopunkBuildArchitect
             }
         }
 
-        private static IEnumerator RunApply(GearDetailsWindow win, LayoutVariant v, GearState st)
+        private static IEnumerator RunApply(Window win, LayoutVariant v, GearState st)
         {
             yield return null;
             try
             {
+                var gear = BuildArchitectPlugin.GetGear(win);
+                var slots = BuildArchitectPlugin.GetEquipSlots(win);
+                if (gear == null || slots == null)
+                {
+                    st.Status = "Cannot apply: gear or equip slots unavailable.";
+                    yield break;
+                }
+
+                bool ouroMode = BuildArchitectPlugin.IsOuroWindow(win);
                 bool result = false;
                 IEnumerator? routine = null;
 
                 try
                 {
-                    var solver = new LayoutSolver(win, _includeOuroboros, _ignoreRotationLocks);
+                    var solver = new LayoutSolver(gear, slots,
+                        () => BuildArchitectPlugin.NotifyUpgradesChanged(win),
+                        _includeOuroboros, _ignoreRotationLocks, ouroMode);
                     routine = solver.Apply(v, r => result = r);
                 }
                 catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply init: " + ex); }

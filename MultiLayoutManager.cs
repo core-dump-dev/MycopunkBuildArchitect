@@ -10,12 +10,17 @@ namespace MycopunkBuildArchitect
         public List<LayoutVariant> FoundVariants { get; } = new();
 
         public IEnumerator GenerateVariants(
-            GearDetailsWindow window, bool includeOuroboros, bool ignoreRotationLocks,
+            IUpgradable gear, ModuleEquipSlots equipSlots, Action onUpgradesChanged,
+            bool includeOuroboros, bool ignoreRotationLocks, bool ouroMode,
             HashSet<int> requiredIds, HashSet<int> excludedIds, Action onDone)
         {
             FoundVariants.Clear();
             LayoutSolver solver;
-            try { solver = new LayoutSolver(window, includeOuroboros, ignoreRotationLocks, requiredIds, excludedIds); }
+            try
+            {
+                solver = new LayoutSolver(gear, equipSlots, onUpgradesChanged,
+                    includeOuroboros, ignoreRotationLocks, ouroMode, requiredIds, excludedIds);
+            }
             catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Solver init failed: " + ex); onDone(); yield break; }
 
             var candidates = solver.CollectCandidates();

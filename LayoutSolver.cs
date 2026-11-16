@@ -40,16 +40,14 @@ namespace MycopunkBuildArchitect
             public SimulatedGrid(int w, int h) { Width = w; Height = h; Occupied = new UpgradeInstance[w, h]; }
         }
 
-        private static readonly FieldInfo EquipSlotsField =
-            typeof(GearDetailsWindow).GetField("equipSlots", BindingFlags.Instance | BindingFlags.NonPublic)!;
-
-        private readonly GearDetailsWindow _window;
+        private readonly IUpgradable _gear;
         private readonly ModuleEquipSlots _equipSlots;
         private readonly HexMap _hexMap;
-        private readonly IUpgradable _gear;
         private readonly IUpgradable? _global;
+        private readonly Action _onUpgradesChanged;
         private readonly bool _includeOuroboros;
         private readonly bool _ignoreRotationLocks;
+        private readonly bool _ouroMode;
         private readonly HashSet<int> _requiredIds;
         private readonly HashSet<int> _excludedIds;
 
@@ -62,15 +60,17 @@ namespace MycopunkBuildArchitect
         private int _nodeCount;
         private HashSet<UpgradeInstance> _placedInstances = new();
 
-        public LayoutSolver(GearDetailsWindow window, bool includeOuroboros, bool ignoreRotationLocks,
+        public LayoutSolver(IUpgradable gear, ModuleEquipSlots equipSlots, Action onUpgradesChanged,
+                            bool includeOuroboros, bool ignoreRotationLocks, bool ouroMode,
                             HashSet<int>? requiredIds = null, HashSet<int>? excludedIds = null)
         {
-            _window = window;
-            _equipSlots = (ModuleEquipSlots)EquipSlotsField.GetValue(window);
-            _hexMap = _equipSlots.HexMap;
-            _gear = window.UpgradablePrefab;
+            _gear = gear;
+            _equipSlots = equipSlots;
+            _hexMap = equipSlots.HexMap;
+            _onUpgradesChanged = onUpgradesChanged ?? (() => { });
             _includeOuroboros = includeOuroboros;
             _ignoreRotationLocks = ignoreRotationLocks;
+            _ouroMode = ouroMode;
             _requiredIds = requiredIds ?? new HashSet<int>();
             _excludedIds = excludedIds ?? new HashSet<int>();
             try { _global = Global.Instance; } catch { _global = null; }
@@ -80,8 +80,17 @@ namespace MycopunkBuildArchitect
         {
             var result = new List<UpgradeInstance>();
             CollectFrom(_gear, result);
-            if (_includeOuroboros && _gear is Character && _global != null && PlayerData.HasUpgrades(_global))
+
+            // Global.Instance contains the Ouroboros-side upgrades. It's only meaningful
+            // for the Character slot (matches OuroGearWindow.SetupUpgrades).
+            // - In Ouro mode: always include (that's what the window shows).
+            // - In hub mode: only when the user opted in.
+            bool wantGlobal = _gear is Character && _global != null
+                              && (_ouroMode || _includeOuroboros)
+                              && PlayerData.HasUpgrades(_global);
+            if (wantGlobal)
                 CollectFrom(_global, result);
+
             return result;
         }
 
@@ -94,7 +103,19 @@ namespace MycopunkBuildArchitect
                 {
                     var inst = e.Upgrade;
                     if (inst == null) continue;
-                    if (inst.RemoveAfterMission) continue;
+
+                    // Filter matches what the corresponding window shows.
+                    // OuroGearWindow.AddUpgrade: keep only RemoveAfterMission == true.
+                    // GearDetailsWindow:         permanent upgrades only.
+                    if (_ouroMode)
+                    {
+                        if (!inst.RemoveAfterMission) continue;
+                    }
+                    else
+                    {
+                        if (inst.RemoveAfterMission) continue;
+                    }
+
                     var upg = inst.Upgrade;
                     if (upg == null) continue;
                     if ((upg.Flags & Upgrade.UpgradeFlags.OnlyInOuroboros) != 0) continue;
@@ -148,7 +169,6 @@ namespace MycopunkBuildArchitect
             UnequipAll();
             yield return null;
 
-            // Excluded upgrades never enter the search.
             List<UpgradeInstance> filtered;
             if (_excludedIds.Count > 0)
             {
@@ -210,8 +230,6 @@ namespace MycopunkBuildArchitect
                 missing.Add((isReq ? "★ REQUIRED: " : "") + SafeName(u) + reason);
             }
 
-            // Count real active cells on the hex grid, not Width*Height
-            // (the grid can contain holes / disabled cells).
             int totalGridCells = 0;
             var cellIter = _hexMap.GetActiveCells();
             while (cellIter.MoveNext()) totalGridCells++;
@@ -318,9 +336,6 @@ namespace MycopunkBuildArchitect
             Search(index + 1, items);
         }
 
-        /// <summary>
-        /// Single source of truth for hex-cell → grid-coordinate translation.
-        /// </summary>
         private static void GetWorldCoords(
             int cellX, int cellY, int offsetX, int offsetY,
             int patternWidth, int centerX,
@@ -432,7 +447,7 @@ namespace MycopunkBuildArchitect
                 yield return null;
             }
 
-            try { _window.OnUpgradesChanged(); } catch { }
+            try { _onUpgradesChanged(); } catch (Exception ex) { BuildArchitectPlugin.Log.LogWarning("OnUpgradesChanged: " + ex.Message); }
 
             variant.Upgrades = actuallyApplied;
             variant.PlacedCount = ok;
@@ -478,7 +493,6 @@ namespace MycopunkBuildArchitect
                     break;
                 case "Random":
                     {
-                        // Time-seeded so each Generate click produces a different ordering.
                         var rng = new System.Random(unchecked(Environment.TickCount * 31 + list.Count));
                         sorted = list.OrderBy(_ => rng.Next()).ToList();
                         break;
