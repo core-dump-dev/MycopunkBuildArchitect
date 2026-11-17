@@ -32,7 +32,6 @@ namespace MycopunkBuildArchitect
         private static readonly ConditionalWeakTable<IUpgradable, GearState> _gearStates = new();
         private static readonly GearState _fallbackState = new();
 
-        private static bool _includeOuroboros = false;
         private static bool _ignoreRotationLocks = false;
         private static bool _showScanList = true;
 
@@ -135,6 +134,33 @@ namespace MycopunkBuildArchitect
             GUI.skin.window = prevWindow;
             GUI.skin.box = prevBox;
             GUI.skin.label = prevLabel;
+
+            // --- Block "transparent" clicks -----------------------------------
+            // GUI.Window does NOT consume clicks that land on empty areas
+            // (labels, backgrounds, padding). Left alone, those events fall
+            // through to the game's own UI underneath the window.
+            //
+            // Controls inside DrawWindow (Buttons, Toggles, DragWindow...)
+            // already call Event.current.Use() for their own events, and
+            // Event.Use() sets the type to EventType.Used. So if something
+            // below still has an unconsumed Mouse*/Scroll type, it means no
+            // child control wanted it — we swallow it here.
+            var ev = Event.current;
+            if (ev != null)
+            {
+                var evType = ev.type;
+                var evPos = ev.mousePosition;
+                if (_windowRect.Contains(evPos)
+                    && (evType == EventType.MouseDown
+                        || evType == EventType.MouseUp
+                        || evType == EventType.MouseDrag
+                        || evType == EventType.MouseMove
+                        || evType == EventType.ScrollWheel))
+                {
+                    ev.Use();
+                }
+            }
+            // ------------------------------------------------------------------
         }
 
         private static void DrawWindow(int id)
@@ -157,13 +183,8 @@ namespace MycopunkBuildArchitect
             GUILayout.Space(4);
 
             if (isOuro)
-            {
-                GUILayout.Label("<color=cyan><b>Ouroboros mode</b> — only temporary mission upgrades are shown (matches the game's list).</color>");
-            }
-            else
-            {
-                _includeOuroboros = GUILayout.Toggle(_includeOuroboros, " Include Ouroboros upgrades (steals from others)");
-            }
+                GUILayout.Label("<color=cyan><b>Ouroboros mode</b> — only temporary mission upgrades are shown.</color>");
+
             _ignoreRotationLocks = GUILayout.Toggle(_ignoreRotationLocks, " Ignore rotation level locks (Cheat mode)");
             GUILayout.Space(4);
 
@@ -339,7 +360,7 @@ namespace MycopunkBuildArchitect
                     return new List<UpgradeInstance>();
                 }
                 bool ouroMode = BuildArchitectPlugin.IsOuroWindow(win);
-                var solver = new LayoutSolver(gear, slots, () => { }, _includeOuroboros, _ignoreRotationLocks, ouroMode);
+                var solver = new LayoutSolver(gear, slots, () => { }, _ignoreRotationLocks, ouroMode);
                 var all = solver.CollectCandidates();
                 return solver.PickForLayout(all);
             }
@@ -386,7 +407,7 @@ namespace MycopunkBuildArchitect
                 var routine = st.Manager.GenerateVariants(
                     gear, slots,
                     () => BuildArchitectPlugin.NotifyUpgradesChanged(win),
-                    _includeOuroboros, _ignoreRotationLocks, ouroMode,
+                    _ignoreRotationLocks, ouroMode,
                     required, excluded, () => done = true);
                 while (!done)
                 {
@@ -427,7 +448,7 @@ namespace MycopunkBuildArchitect
                 {
                     var solver = new LayoutSolver(gear, slots,
                         () => BuildArchitectPlugin.NotifyUpgradesChanged(win),
-                        _includeOuroboros, _ignoreRotationLocks, ouroMode);
+                        _ignoreRotationLocks, ouroMode);
                     routine = solver.Apply(v, r => result = r);
                 }
                 catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply init: " + ex); }
