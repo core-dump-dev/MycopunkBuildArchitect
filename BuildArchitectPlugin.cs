@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Logging;
@@ -15,11 +16,10 @@ namespace MycopunkBuildArchitect
     {
         public const string PluginGuid = "mycopunk.buildarchitect";
         public const string PluginName = "Mycopunk Build Architect";
-        public const string PluginVersion = "0.4.1";
+        public const string PluginVersion = "0.6.0";
 
         internal static ManualLogSource Log = null!;
         internal static BuildArchitectPlugin? Instance { get; private set; }
-
         private Harmony? _harmony;
         internal Window? CurrentWindow;
 
@@ -34,6 +34,14 @@ namespace MycopunkBuildArchitect
                 PatchWindow("OuroGearWindow");
             }
             catch (Exception ex) { Logger.LogError("Patch failed: " + ex); }
+            try
+            {
+                PatchWindowClicks("GearDetailsWindow");
+                PatchWindowClicks("OuroGearWindow");
+            }
+            catch (Exception ex) { Logger.LogError("Click patch failed: " + ex); }
+            try { PatchUiRaycaster(); }
+            catch (Exception ex) { Logger.LogError("UIRaycaster patch failed: " + ex); }
             Logger.LogInfo($"{PluginName} v{PluginVersion} loaded.");
         }
 
@@ -50,11 +58,95 @@ namespace MycopunkBuildArchitect
             Logger.LogInfo("Patched " + typeName);
         }
 
+        private void PatchWindowClicks(string typeName)
+        {
+            var t = AccessTools.TypeByName(typeName);
+            if (t == null) return;
+            var prefix = new HarmonyMethod(typeof(BuildArchitectPlugin), nameof(BlockGameClick));
+            int n = 0;
+            foreach (var name in new[] { "OnClickUp", "OnRightClickUp", "OnClick", "OnRightClick" })
+            {
+                var m = AccessTools.Method(t, name);
+                if (m == null) { Logger.LogWarning($"{typeName}.{name} not found"); continue; }
+                try { _harmony!.Patch(m, prefix: prefix); n++; }
+                catch (Exception ex) { Logger.LogWarning($"{typeName}.{name}: {ex.Message}"); }
+            }
+            Logger.LogInfo($"{typeName} click handlers patched: {n}");
+        }
+
+        private void PatchUiRaycaster()
+        {
+            var t = AccessTools.TypeByName("UIRaycaster")
+                    ?? AccessTools.TypeByName("Pigeon.UI.UIRaycaster")
+                    ?? AccessTools.TypeByName("Pigeon.UIRaycaster");
+            if (t == null) { Logger.LogWarning("UIRaycaster type not found."); return; }
+
+            var prefix = new HarmonyMethod(typeof(BuildArchitectPlugin), nameof(BlockUiRaycast));
+            var probes = new List<Type>();
+            foreach (var n in new[]
+                     {
+                         "GearUpgradeUI", "UpgradeEquipCell", "UpgradeIcon", "SkinEquipButton",
+                         "Pigeon.UI.GearUpgradeUI", "Pigeon.UI.UpgradeEquipCell",
+                         "Pigeon.UI.UpgradeIcon", "Pigeon.UI.SkinEquipButton",
+                         "UnityEngine.UI.Graphic"
+                     })
+            {
+                var x = AccessTools.TypeByName(n);
+                if (x != null && !probes.Contains(x)) probes.Add(x);
+            }
+            probes.Add(typeof(Component));
+            probes.Add(typeof(MonoBehaviour));
+            probes.Add(typeof(object));
+
+            int patched = 0;
+            foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic
+                                           | BindingFlags.Static | BindingFlags.Instance))
+            {
+                if (m.ReturnType != typeof(bool)) continue;
+                if (!m.Name.StartsWith("Raycast", StringComparison.Ordinal)) continue;
+
+                if (!m.IsGenericMethodDefinition)
+                {
+                    try { _harmony!.Patch(m, prefix: prefix); patched++; Logger.LogInfo("Patched UIRaycaster." + m.Name); }
+                    catch (Exception ex) { Logger.LogWarning($"UIRaycaster.{m.Name}: {ex.Message}"); }
+                    continue;
+                }
+
+                foreach (var p in probes)
+                {
+                    MethodInfo closed;
+                    try { closed = m.MakeGenericMethod(p); }
+                    catch { continue; }
+                    try
+                    {
+                        _harmony!.Patch(closed, prefix: prefix);
+                        patched++;
+                        Logger.LogInfo($"Patched UIRaycaster.{m.Name}<{p.Name}>");
+                        break;
+                    }
+                    catch (Exception ex) { Logger.LogWarning($"UIRaycaster.{m.Name}<{p.Name}>: {ex.Message}"); }
+                }
+            }
+            Logger.LogInfo($"UIRaycaster patches: {patched}");
+        }
+
+        private static bool BlockGameClick()
+        {
+            return !ArchitectUI.BlockGameUiInput;
+        }
+
+        private static bool BlockUiRaycast(ref bool __result)
+        {
+            if (!ArchitectUI.BlockGameUiInput) return true;
+            __result = false;
+            return false;
+        }
+
         private void OnDestroy()
         {
             if (Instance == this) Instance = null;
-            try { _harmony?.UnpatchSelf(); } catch { }
             ArchitectUI.Dispose();
+            try { _harmony?.UnpatchSelf(); } catch { }
         }
 
         private static void OnWindowOpened(object __instance)
@@ -68,8 +160,6 @@ namespace MycopunkBuildArchitect
             if (Instance == null) return;
             Instance.CurrentWindow = null;
         }
-
-        // ---------- универсальные хелперы ----------
 
         internal static IUpgradable? GetGear(Window? window)
         {

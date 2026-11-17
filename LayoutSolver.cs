@@ -49,7 +49,6 @@ namespace MycopunkBuildArchitect
         private readonly bool _ouroMode;
         private readonly HashSet<int> _requiredIds;
         private readonly HashSet<int> _excludedIds;
-
         private SimulatedGrid _simGrid = null!;
         private List<PlacedUpgrade> _bestPlacement = new();
         private List<PlacedUpgrade> _currentPlacement = new();
@@ -58,8 +57,6 @@ namespace MycopunkBuildArchitect
         private int _currentReq;
         private int _nodeCount;
         private HashSet<UpgradeInstance> _placedInstances = new();
-
-        // ---------- caches (per solver instance, reused across strategies) ----------
         private readonly Dictionary<UpgradeInstance, int> _sourceIdCache = new();
         private readonly Dictionary<UpgradeInstance, bool> _requiredCache = new();
         private int[] _requiredSuffix = Array.Empty<int>();
@@ -95,26 +92,30 @@ namespace MycopunkBuildArchitect
             return req;
         }
 
+        internal static bool IsOuroUpgrade(UpgradeInstance u)
+        {
+            try { if (u.RemoveAfterMission) return true; } catch { }
+            try { if ((u.Upgrade.Flags & Upgrade.UpgradeFlags.OnlyInOuroboros) != 0) return true; } catch { }
+            return false;
+        }
+
         public List<UpgradeInstance> CollectCandidates()
         {
             var result = new List<UpgradeInstance>();
-            CollectFrom(_gear, result);
-
-            // In Ouroboros mode only, we may pull from the global player state too.
-            // Inline the check so the compiler can narrow _global to non-null
-            // (a bool local like "wantGlobal" would lose that narrowing).
-            if (_gear is Character
-                && _ouroMode
-                && _global != null
-                && PlayerData.HasUpgrades(_global))
+            var seen = new HashSet<UpgradeInstance>();
+            CollectFrom(_gear, result, seen);
+            if (_gear is Character && _global != null && !ReferenceEquals(_global, _gear))
             {
-                CollectFrom(_global, result);
+                try
+                {
+                    if (PlayerData.HasUpgrades(_global)) CollectFrom(_global, result, seen);
+                }
+                catch { }
             }
-
             return result;
         }
 
-        private void CollectFrom(IUpgradable source, List<UpgradeInstance> list)
+        private void CollectFrom(IUpgradable source, List<UpgradeInstance> list, HashSet<UpgradeInstance> seen)
         {
             try
             {
@@ -123,24 +124,9 @@ namespace MycopunkBuildArchitect
                 {
                     var inst = e.Upgrade;
                     if (inst == null) continue;
-
-                    if (_ouroMode)
-                    {
-                        if (!inst.RemoveAfterMission) continue;
-                    }
-                    else
-                    {
-                        if (inst.RemoveAfterMission) continue;
-                    }
-
-                    var upg = inst.Upgrade;
-                    if (upg == null) continue;
-                    if ((upg.Flags & Upgrade.UpgradeFlags.OnlyInOuroboros) != 0) continue;
-                    if (upg.Rarity == Rarity.Contraband) continue;
-                    if (!upg.Obtainable() && !upg.AllowExistingUnobtainableUpgrade()) continue;
-                    HexMap? p;
-                    try { p = inst.GetPattern(); } catch { continue; }
-                    if (p == null || (p.Width == 0 && p.Height == 0)) continue;
+                    if (inst.Upgrade == null) continue;
+                    if (IsOuroUpgrade(inst) != _ouroMode) continue;
+                    if (!seen.Add(inst)) continue;
                     list.Add(inst);
                 }
             }
@@ -183,10 +169,7 @@ namespace MycopunkBuildArchitect
 
         public IEnumerator Solve(string strategy, List<UpgradeInstance> candidates, Action<LayoutVariant> done)
         {
-            // NOTE: no UnequipAll here. Simulation starts from an empty grid anyway,
-            // and modifying the real game state 5 times (once per strategy) is what was causing hitches.
             yield return null;
-
             List<UpgradeInstance> filtered;
             if (_excludedIds.Count > 0)
             {
@@ -199,9 +182,7 @@ namespace MycopunkBuildArchitect
             {
                 filtered = candidates;
             }
-
             var ordered = SortCandidates(filtered, strategy, _requiredIds, this);
-
             _simGrid = new SimulatedGrid(_hexMap.Width, _hexMap.Height);
             _placedInstances.Clear();
             _currentPlacement.Clear();
@@ -210,36 +191,27 @@ namespace MycopunkBuildArchitect
             _maxReq = 0;
             _currentReq = 0;
             _nodeCount = 0;
-
-            // Precompute required-suffix once: O(N) → O(1) bound check per node.
             _requiredSuffix = new int[ordered.Count + 1];
             for (int i = ordered.Count - 1; i >= 0; i--)
                 _requiredSuffix[i] = _requiredSuffix[i + 1] + (IsRequired(ordered[i]) ? 1 : 0);
-
             Search(0, ordered);
-
             var placed = new List<PlacedUpgrade>();
             var missing = new List<string>();
-
             foreach (var p in _bestPlacement)
             {
                 p.DisplayName = SafeName(p.Instance);
                 p.Description = SafeDescription(p.Instance);
                 placed.Add(p);
             }
-
             var placedSet = new HashSet<UpgradeInstance>(_bestPlacement.Select(x => x.Instance));
             int requiredMissing = 0;
-
             foreach (var u in ordered)
             {
                 if (placedSet.Contains(u)) continue;
                 bool isReq = IsRequired(u);
                 if (isReq) requiredMissing++;
-
                 bool canRotate = _ignoreRotationLocks;
                 if (!canRotate) { try { canRotate = PlayerData.Instance.CanRotateUpgrade(u.Upgrade.Rarity); } catch { } }
-
                 HexMap? pattern = null;
                 try { pattern = u.GetPattern(); } catch { }
                 bool wouldFitRotated = false;
@@ -248,15 +220,12 @@ namespace MycopunkBuildArchitect
                     for (int r = 1; r < 6 && !wouldFitRotated; r++)
                         if (WouldFitWithRotation(pattern, r)) wouldFitRotated = true;
                 }
-
                 string reason = wouldFitRotated ? " (needs rotation unlock)" : " (no fit)";
                 missing.Add((isReq ? "★ REQUIRED: " : "") + SafeName(u) + reason);
             }
-
             int totalGridCells = 0;
             var cellIter = _hexMap.GetActiveCells();
             while (cellIter.MoveNext()) totalGridCells++;
-
             int usedCells = 0;
             foreach (var p in placed)
             {
@@ -268,7 +237,6 @@ namespace MycopunkBuildArchitect
                 catch { }
             }
             int freeCells = Math.Max(0, totalGridCells - usedCells);
-
             var variant = new LayoutVariant
             {
                 Strategy = strategy,
@@ -279,14 +247,12 @@ namespace MycopunkBuildArchitect
                 Upgrades = placed,
                 Missing = missing,
             };
-
             done(variant);
         }
 
         private void Search(int index, List<UpgradeInstance> items)
         {
             if (_nodeCount++ > 500000) return;
-
             if (index >= items.Count)
             {
                 if (_currentReq > _maxReq || (_currentReq == _maxReq && _currentPlacement.Count > _maxPlaced))
@@ -298,30 +264,29 @@ namespace MycopunkBuildArchitect
                 }
                 return;
             }
-
-            // O(1) bound check using precomputed suffix sums.
             int maxPossibleReq = _currentReq + _requiredSuffix[index];
             int maxPossibleTotal = _currentPlacement.Count + (items.Count - index);
             if (maxPossibleReq < _maxReq) return;
             if (maxPossibleReq == _maxReq && maxPossibleTotal <= _maxPlaced) return;
-
             var upg = items[index];
             HexMap? pattern = null;
             try { pattern = upg.GetPattern(); } catch { }
-
+            bool placeable = false;
             if (pattern != null)
+            {
+                try { placeable = pattern.GetCellCount() > 0; } catch { }
+            }
+            if (placeable && pattern != null)
             {
                 bool canRotate = _ignoreRotationLocks;
                 if (!canRotate) { try { canRotate = PlayerData.Instance.CanRotateUpgrade(upg.Upgrade.Rarity); } catch { } }
                 int maxRot = canRotate ? 6 : 1;
-
                 var validPlacements = new List<PlacedUpgrade>();
                 for (int rot = 0; rot < maxRot; rot++)
                 {
                     HexMap rotPattern;
                     try { rotPattern = pattern.GetModifiedMap(rot); } catch { continue; }
                     if (rotPattern == null) continue;
-
                     for (int y = 0; y < _simGrid.Height; y++)
                     {
                         for (int x = 0; x < _simGrid.Width; x++)
@@ -333,9 +298,7 @@ namespace MycopunkBuildArchitect
                                 if (rotPattern[centerX, i].enabled) { sumY += i; count++; }
                             int offsetY = count == 0 ? (y - rotPattern.Height / 2) : (y - sumY / count);
                             if (centerX % 2 == 1) offsetY--;
-
                             if (!CanFitSimulated(rotPattern, offsetX, offsetY, upg)) continue;
-
                             validPlacements.Add(new PlacedUpgrade
                             {
                                 Instance = upg,
@@ -346,7 +309,6 @@ namespace MycopunkBuildArchitect
                         }
                     }
                 }
-
                 foreach (var p in validPlacements)
                 {
                     PlaceSimulated(p);
@@ -357,7 +319,6 @@ namespace MycopunkBuildArchitect
                     if (_maxReq == _requiredIds.Count && _maxPlaced == items.Count) return;
                 }
             }
-
             Search(index + 1, items);
         }
 
@@ -426,10 +387,10 @@ namespace MycopunkBuildArchitect
 
         private bool WouldFitWithRotation(HexMap pattern, int rotation)
         {
+            try { if (pattern.GetCellCount() == 0) return false; } catch { return false; }
             HexMap rotPattern;
             try { rotPattern = pattern.GetModifiedMap(rotation); } catch { return false; }
             if (rotPattern == null) return false;
-
             for (int y = 0; y < _simGrid.Height; y++)
                 for (int x = 0; x < _simGrid.Width; x++)
                 {
@@ -462,19 +423,11 @@ namespace MycopunkBuildArchitect
         {
             UnequipAll();
             yield return null;
-
-            // IMPORTANT: grid-expanding upgrades must be equipped FIRST.
-            // UnequipAll() shrinks the grid back to its base size, so anything
-            // the solver placed in the expanded cells won't fit until the
-            // expander is re-equipped. Stable OrderByDescending preserves the
-            // relative order within each group.
             var ordered = variant.Upgrades
                 .OrderByDescending(p => IsExpander(p.Instance) ? 1 : 0)
                 .ToList();
-
             int ok = 0, fail = 0;
             var actuallyApplied = new List<PlacedUpgrade>();
-
             foreach (var p in ordered)
             {
                 try
@@ -486,12 +439,9 @@ namespace MycopunkBuildArchitect
                 catch (Exception ex) { fail++; BuildArchitectPlugin.Log.LogWarning("Apply failed: " + ex.Message); }
                 yield return null;
             }
-
             try { _onUpgradesChanged(); } catch (Exception ex) { BuildArchitectPlugin.Log.LogWarning("OnUpgradesChanged: " + ex.Message); }
-
             variant.Upgrades = actuallyApplied;
             variant.PlacedCount = ok;
-
             BuildArchitectPlugin.Log.LogInfo($"Apply: {ok} placed, {fail} failed");
             done(ok > 0);
         }
@@ -516,17 +466,13 @@ namespace MycopunkBuildArchitect
             return u.InstanceID;
         }
 
-        /// <summary>
-        /// Grid-expanding upgrades ("expand" in the localized name).
-        /// Shared with the "Expanders first" strategy and used to order
-        /// equipping in Apply(). Null-safe.
-        /// </summary>
         internal static bool IsExpander(UpgradeInstance u)
         {
             try
             {
                 var name = u.Upgrade?.Name;
-                return !string.IsNullOrEmpty(name)
+                return name != null
+                    && name.Length > 0
                     && name.IndexOf("expand", StringComparison.OrdinalIgnoreCase) >= 0;
             }
             catch { return false; }
@@ -586,15 +532,12 @@ namespace MycopunkBuildArchitect
             {
                 var upg = u.Upgrade;
                 if (upg == null) return "";
-
                 var t = upg.GetType();
                 string flavor = "";
                 string stats = "";
-
                 var descProp = t.GetProperty("Description", BindingFlags.Public | BindingFlags.Instance);
                 if (descProp != null && descProp.PropertyType == typeof(string))
                     flavor = descProp.GetValue(upg) as string ?? "";
-
                 var statMethod = t.GetMethod("GetStatList", BindingFlags.Public | BindingFlags.Instance);
                 if (statMethod != null && statMethod.ReturnType == typeof(string))
                 {
@@ -608,10 +551,8 @@ namespace MycopunkBuildArchitect
                     }
                     catch { }
                 }
-
                 flavor = StripTags(flavor).Trim();
                 stats = StripTags(stats).Trim();
-
                 if (!string.IsNullOrEmpty(flavor) && !string.IsNullOrEmpty(stats))
                     return flavor + "\n" + stats;
                 if (!string.IsNullOrEmpty(flavor)) return flavor;
@@ -624,7 +565,7 @@ namespace MycopunkBuildArchitect
 
         internal static string StripTags(string? s)
         {
-            if (string.IsNullOrEmpty(s) || s.IndexOf('<') < 0) return s ?? "";
+            if (s == null || s.Length == 0 || s.IndexOf('<') < 0) return s ?? "";
             var sb = new StringBuilder(s.Length);
             bool inTag = false;
             foreach (char c in s)

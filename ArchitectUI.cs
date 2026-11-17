@@ -1,8 +1,13 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text;
+using HarmonyLib;
 using Pigeon.UI;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using Rect = UnityEngine.Rect;
 
 namespace MycopunkBuildArchitect
@@ -15,7 +20,6 @@ namespace MycopunkBuildArchitect
         {
             public List<UpgradeInstance> ScannedCandidates = new();
             public Dictionary<int, UpgradeMark> Marks = new();
-            // Cached name/description — refreshed only on Scan, not every OnGUI frame.
             public Dictionary<UpgradeInstance, string> NameCache = new();
             public Dictionary<UpgradeInstance, string> DescCache = new();
             public bool Scanned;
@@ -28,13 +32,14 @@ namespace MycopunkBuildArchitect
 
         private static bool _visible;
         private static Rect _windowRect = new(30, 40, 580, 780);
-
         private static readonly ConditionalWeakTable<IUpgradable, GearState> _gearStates = new();
         private static readonly GearState _fallbackState = new();
-
         private static bool _ignoreRotationLocks = false;
         private static bool _showScanList = true;
-
+        private static bool _blockClicks = true;
+        private static Vector2 _guiMouse;
+        private static InputAction? _pointAction;
+        private static bool _pointResolved;
         private static Texture2D? _bgTex;
         private static Texture2D? _boxTex;
         private static GUIStyle? _winStyle;
@@ -44,6 +49,86 @@ namespace MycopunkBuildArchitect
         private static GUIStyle? _excludedStyle;
 
         public static void ToggleVisibility() => _visible = !_visible;
+
+        internal static bool BlockGameUiInput
+        {
+            get
+            {
+                if (!_visible || !_blockClicks) return false;
+                var plugin = BuildArchitectPlugin.Instance;
+                if (plugin == null || plugin.CurrentWindow == null) return false;
+                if (_windowRect.Contains(_guiMouse)) return true;
+                var p = GamePointer();
+                if (p.x < 0f && p.y < 0f) return false;
+                return _windowRect.Contains(new Vector2(p.x, Screen.height - p.y));
+            }
+        }
+
+        private static object? ReadMemberChain(Type? rootType, params string[] names)
+        {
+            object? cur = null;
+            Type? t = rootType;
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
+                                       | BindingFlags.Instance | BindingFlags.Static
+                                       | BindingFlags.FlattenHierarchy;
+            foreach (var n in names)
+            {
+                if (t == null) return null;
+                var p = t.GetProperty(n, flags);
+                if (p != null)
+                {
+                    cur = p.GetValue(cur);
+                }
+                else
+                {
+                    var f = t.GetField(n, flags);
+                    if (f != null)
+                    {
+                        cur = f.GetValue(cur);
+                    }
+                    else
+                    {
+                        var nested = t.GetNestedType(n, BindingFlags.Public | BindingFlags.NonPublic);
+                        if (nested == null) return null;
+                        cur = null;
+                        t = nested;
+                        continue;
+                    }
+                }
+                if (cur == null) return null;
+                t = cur.GetType();
+            }
+            return cur;
+        }
+
+        private static void ResolvePointAction()
+        {
+            if (_pointResolved) return;
+            _pointResolved = true;
+            foreach (var tn in new[] { "PlayerInput", "Pigeon.PlayerInput", "Pigeon.UI.PlayerInput", "Pigeon.Movement.PlayerInput" })
+            {
+                var t = AccessTools.TypeByName(tn);
+                if (t == null) continue;
+                var act = ReadMemberChain(t, "Controls", "Menu", "Point") as InputAction;
+                if (act != null) { _pointAction = act; break; }
+            }
+            BuildArchitectPlugin.Log.LogInfo("Game UI pointer: " + (_pointAction != null ? _pointAction.name : "not found, using IMGUI mouse"));
+        }
+
+        private static Vector2 GamePointer()
+        {
+            ResolvePointAction();
+            if (_pointAction != null)
+            {
+                try { return _pointAction.ReadValue<Vector2>(); } catch { }
+            }
+            var m = Mouse.current;
+            if (m != null)
+            {
+                try { return m.position.ReadValue(); } catch { }
+            }
+            return new Vector2(-1f, -1f);
+        }
 
         private static GearState CurrentState
         {
@@ -58,9 +143,10 @@ namespace MycopunkBuildArchitect
 
         internal static void Dispose()
         {
-            if (_bgTex != null) { Object.Destroy(_bgTex); _bgTex = null; }
-            if (_boxTex != null) { Object.Destroy(_boxTex); _boxTex = null; }
+            if (_bgTex != null) { UnityEngine.Object.Destroy(_bgTex); _bgTex = null; }
+            if (_boxTex != null) { UnityEngine.Object.Destroy(_boxTex); _boxTex = null; }
             _winStyle = null; _boxStyle = null; _labelStyle = null; _wrapStyle = null; _excludedStyle = null;
+            _pointAction = null; _pointResolved = false;
         }
 
         private static void EnsureTextures()
@@ -114,53 +200,46 @@ namespace MycopunkBuildArchitect
 
         public static void DrawIfVisible()
         {
-            if (!_visible) return;
             var plugin = BuildArchitectPlugin.Instance;
-            if (plugin == null || plugin.CurrentWindow == null) return;
+            if (!_visible || plugin == null || plugin.CurrentWindow == null) return;
+
+            var ev0 = Event.current;
+            if (ev0 != null)
+            {
+                var t0 = ev0.type;
+                if (t0 == EventType.Repaint || t0 == EventType.Layout
+                    || t0 == EventType.MouseMove || t0 == EventType.MouseDrag
+                    || t0 == EventType.MouseDown || t0 == EventType.MouseUp
+                    || t0 == EventType.ScrollWheel)
+                {
+                    _guiMouse = ev0.mousePosition;
+                }
+            }
 
             EnsureTextures();
             EnsureStyles();
-
             var prevWindow = GUI.skin.window;
             var prevBox = GUI.skin.box;
             var prevLabel = GUI.skin.label;
-
             GUI.skin.window = _winStyle!;
             GUI.skin.box = _boxStyle!;
             GUI.skin.label = _labelStyle!;
-
             _windowRect = GUI.Window(182742, _windowRect, DrawWindow, "BUILD ARCHITECT");
-
             GUI.skin.window = prevWindow;
             GUI.skin.box = prevBox;
             GUI.skin.label = prevLabel;
 
-            // --- Block "transparent" clicks -----------------------------------
-            // GUI.Window does NOT consume clicks that land on empty areas
-            // (labels, backgrounds, padding). Left alone, those events fall
-            // through to the game's own UI underneath the window.
-            //
-            // Controls inside DrawWindow (Buttons, Toggles, DragWindow...)
-            // already call Event.current.Use() for their own events, and
-            // Event.Use() sets the type to EventType.Used. So if something
-            // below still has an unconsumed Mouse*/Scroll type, it means no
-            // child control wanted it — we swallow it here.
             var ev = Event.current;
             if (ev != null)
             {
-                var evType = ev.type;
-                var evPos = ev.mousePosition;
-                if (_windowRect.Contains(evPos)
-                    && (evType == EventType.MouseDown
-                        || evType == EventType.MouseUp
-                        || evType == EventType.MouseDrag
-                        || evType == EventType.MouseMove
-                        || evType == EventType.ScrollWheel))
+                var t = ev.type;
+                if (_windowRect.Contains(ev.mousePosition)
+                    && (t == EventType.MouseDown || t == EventType.MouseUp || t == EventType.MouseDrag
+                        || t == EventType.MouseMove || t == EventType.ScrollWheel))
                 {
                     ev.Use();
                 }
             }
-            // ------------------------------------------------------------------
         }
 
         private static void DrawWindow(int id)
@@ -168,7 +247,6 @@ namespace MycopunkBuildArchitect
             var st = CurrentState;
             var win = BuildArchitectPlugin.Instance?.CurrentWindow;
             bool isOuro = BuildArchitectPlugin.IsOuroWindow(win);
-
             GUILayout.BeginVertical();
             string gearName = "?";
             string windowName = "?";
@@ -178,25 +256,21 @@ namespace MycopunkBuildArchitect
                 windowName = win?.GetType().Name ?? "?";
             }
             catch { }
-
             GUILayout.Label($"<b>Gear: {gearName}</b>  <i>({windowName})</i>");
+            GUILayout.Label(isOuro
+                ? "<color=cyan><b>Ouroboros window</b> — mission upgrades only.</color>"
+                : "<color=#8fd3ff><b>Base window</b> — character upgrades only.</color>");
             GUILayout.Space(4);
-
-            if (isOuro)
-                GUILayout.Label("<color=cyan><b>Ouroboros mode</b> — only temporary mission upgrades are shown.</color>");
-
+            _blockClicks = GUILayout.Toggle(_blockClicks, " Ignore game clicks under this window");
             _ignoreRotationLocks = GUILayout.Toggle(_ignoreRotationLocks, " Ignore rotation level locks (Cheat mode)");
             GUILayout.Space(4);
-
             if (BuildArchitectPlugin.IsOuroAutoApply(win))
             {
-                GUILayout.Label("<color=red>⚠ Ouroboros Auto-Apply is ON — manual placement is disabled by the game. Disable it in game settings.</color>");
+                GUILayout.Label("<color=red>⚠ Ouroboros Auto-Apply is ON — manual placement is disabled by the game.</color>");
                 GUILayout.Space(4);
             }
-
             if (GUILayout.Button(_showScanList ? "▼ Hide available upgrades" : "▶ Show available upgrades", GUILayout.Height(22)))
                 _showScanList = !_showScanList;
-
             GUI.enabled = !st.IsWorking;
             if (GUILayout.Button("1. Scan available upgrades", GUILayout.Height(28)))
             {
@@ -206,67 +280,18 @@ namespace MycopunkBuildArchitect
                     RefreshCaches(st);
                     st.Scanned = true;
                     _showScanList = true;
-                    st.Status = $"Scanned {st.ScannedCandidates.Count} upgrade type(s).";
+                    st.Status = $"Scanned {st.ScannedCandidates.Count} upgrade(s).";
                 }
             }
             GUI.enabled = true;
-
             if (st.Scanned && st.ScannedCandidates.Count > 0 && _showScanList)
             {
-                GUILayout.Label($"<b>Available ({st.ScannedCandidates.Count})</b> — LMB on checkbox = ★ required, RMB on checkbox = ✕ excluded:");
-                st.ScanScroll = GUILayout.BeginScrollView(st.ScanScroll, GUILayout.Height(200));
-                foreach (var c in st.ScannedCandidates)
-                {
-                    int sid = LayoutSolver.GetSourceId(c);
-                    if (!st.Marks.TryGetValue(sid, out var mark)) mark = UpgradeMark.None;
-                    var currentMark = mark;
-
-                    // Cached — no reflection per frame.
-                    string name = st.NameCache.TryGetValue(c, out var n) ? n : LayoutSolver.SafeName(c);
-                    string desc = st.DescCache.TryGetValue(c, out var d) ? d : LayoutSolver.SafeDescription(c);
-                    string label = string.IsNullOrEmpty(desc) ? name : name + "\n    " + desc;
-
-                    string toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
-                                       : currentMark == UpgradeMark.Excluded ? " ✕ "
-                                       : " ☐ ";
-
-                    GUILayout.BeginHorizontal();
-
-                    Rect btnRect = GUILayoutUtility.GetRect(
-                        new GUIContent(toggleLabel), GUI.skin.button, GUILayout.Width(30));
-
-                    var ev = Event.current;
-
-                    if (ev.type == EventType.MouseDown && ev.button == 1 && btnRect.Contains(ev.mousePosition))
-                    {
-                        currentMark = currentMark == UpgradeMark.Excluded
-                            ? UpgradeMark.None
-                            : UpgradeMark.Excluded;
-                        st.Marks[sid] = currentMark;
-                        ev.Use();
-                    }
-
-                    toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
-                                : currentMark == UpgradeMark.Excluded ? " ✕ "
-                                : " ☐ ";
-
-                    bool lmb = GUI.Button(btnRect, toggleLabel);
-                    if (lmb && ev.button == 0)
-                    {
-                        currentMark = currentMark == UpgradeMark.Required
-                            ? UpgradeMark.None
-                            : UpgradeMark.Required;
-                        st.Marks[sid] = currentMark;
-                    }
-
-                    GUILayout.Label(label, currentMark == UpgradeMark.Excluded ? _excludedStyle! : _wrapStyle!);
-                    GUILayout.EndHorizontal();
-
-                    GUILayout.Space(2);
-                }
+                string group = isOuro ? "OUROBOROS UPGRADES" : "CHARACTER UPGRADES";
+                GUILayout.Label($"<b>{group} ({st.ScannedCandidates.Count})</b> — LMB = ★ required, RMB = ✕ excluded:");
+                st.ScanScroll = GUILayout.BeginScrollView(st.ScanScroll, GUILayout.Height(240));
+                foreach (var c in st.ScannedCandidates) DrawUpgradeRow(st, c);
                 GUILayout.EndScrollView();
             }
-
             GUILayout.Space(4);
             GUI.enabled = !st.IsWorking;
             if (GUILayout.Button("2. Generate layouts", GUILayout.Height(32)))
@@ -279,38 +304,30 @@ namespace MycopunkBuildArchitect
                         RefreshCaches(st);
                         st.Scanned = true;
                     }
-
                     st.IsWorking = true;
                     st.Status = "Searching...";
                     BuildArchitectPlugin.Instance.StartCoroutine(RunGenerate(win, st));
                 }
             }
             GUI.enabled = true;
-
             GUILayout.Space(6);
             GUILayout.Label($"<b>Results ({st.Manager.FoundVariants.Count}):</b>");
-
             st.Scroll = GUILayout.BeginScrollView(st.Scroll, GUILayout.ExpandHeight(true));
-
             if (st.Manager.FoundVariants.Count == 0)
                 GUILayout.Label("(none yet — press Generate)");
-
             foreach (var v in st.Manager.FoundVariants)
             {
                 GUILayout.BeginVertical("box");
                 string reqWarn = v.RequiredMissing > 0 ? $"  <color=red>⚠ {v.RequiredMissing} REQUIRED missing</color>" : "";
                 GUILayout.Label($"<b>{v.Name}  [{v.Strategy}]</b>  {v.PlacedCount}/{v.TotalCount} upgrades, {v.FreeCells} cells free{reqWarn}");
-
                 foreach (var p in v.Upgrades)
                 {
                     string line = "  • " + p.DisplayName;
                     if (!string.IsNullOrEmpty(p.Description)) line += "\n      * " + p.Description;
                     GUILayout.Label(line);
                 }
-
                 if (v.Missing.Count > 0)
                     GUILayout.Label("  <color=orange>Missing: " + string.Join(", ", v.Missing) + "</color>");
-
                 GUI.enabled = !st.IsWorking;
                 if (GUILayout.Button("Apply this layout", GUILayout.Height(26)))
                 {
@@ -326,13 +343,86 @@ namespace MycopunkBuildArchitect
                 GUILayout.Space(4);
             }
             GUILayout.EndScrollView();
-
             GUILayout.Space(4);
             GUILayout.Label(st.Status);
+            GUILayout.Label($"<size=10><color=#999999>click guard: {(BlockGameUiInput ? "ACTIVE" : "idle")}</color></size>");
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Dump input info to log", GUILayout.Width(190))) DumpInputInfo();
             if (GUILayout.Button("Close", GUILayout.Width(75))) _visible = false;
-
+            GUILayout.EndHorizontal();
             GUILayout.EndVertical();
             GUI.DragWindow(new Rect(0, 0, 10000, 24));
+        }
+
+        private static void DrawUpgradeRow(GearState st, UpgradeInstance c)
+        {
+            int sid = LayoutSolver.GetSourceId(c);
+            if (!st.Marks.TryGetValue(sid, out var mark)) mark = UpgradeMark.None;
+            var currentMark = mark;
+            string name = st.NameCache.TryGetValue(c, out var n) ? n : LayoutSolver.SafeName(c);
+            string desc = st.DescCache.TryGetValue(c, out var d) ? d : LayoutSolver.SafeDescription(c);
+            string label = desc.Length == 0 ? name : name + "\n    " + desc;
+            string toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
+                               : currentMark == UpgradeMark.Excluded ? " ✕ "
+                               : " ☐ ";
+            GUILayout.BeginHorizontal();
+            Rect btnRect = GUILayoutUtility.GetRect(
+                new GUIContent(toggleLabel), GUI.skin.button, GUILayout.Width(30));
+            var ev = Event.current;
+            if (ev.type == EventType.MouseDown && ev.button == 1 && btnRect.Contains(ev.mousePosition))
+            {
+                currentMark = currentMark == UpgradeMark.Excluded ? UpgradeMark.None : UpgradeMark.Excluded;
+                st.Marks[sid] = currentMark;
+                ev.Use();
+            }
+            toggleLabel = currentMark == UpgradeMark.Required ? " ★ "
+                        : currentMark == UpgradeMark.Excluded ? " ✕ "
+                        : " ☐ ";
+            bool lmb = GUI.Button(btnRect, toggleLabel);
+            if (lmb && ev.button == 0)
+            {
+                currentMark = currentMark == UpgradeMark.Required ? UpgradeMark.None : UpgradeMark.Required;
+                st.Marks[sid] = currentMark;
+            }
+            GUILayout.Label(label, currentMark == UpgradeMark.Excluded ? _excludedStyle! : _wrapStyle!);
+            GUILayout.EndHorizontal();
+            GUILayout.Space(2);
+        }
+
+        internal static void DumpInputInfo()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== Build Architect input dump ===");
+            sb.AppendLine($"visible={_visible} blockClicks={_blockClicks} blocking={BlockGameUiInput}");
+            sb.AppendLine($"Screen={Screen.width}x{Screen.height} window={_windowRect}");
+            sb.AppendLine($"guiMouse={_guiMouse} gamePoint={GamePointer()} pointAction={(_pointAction != null ? _pointAction.name : "null")}");
+            var m = Mouse.current;
+            sb.AppendLine(m == null ? "Mouse.current = null" : $"Mouse raw={m.position.ReadValue()}");
+            try
+            {
+                var t = AccessTools.TypeByName("UIRaycaster")
+                        ?? AccessTools.TypeByName("Pigeon.UI.UIRaycaster")
+                        ?? AccessTools.TypeByName("Pigeon.UIRaycaster");
+                if (t == null) sb.AppendLine("UIRaycaster: NOT FOUND");
+                else
+                {
+                    sb.AppendLine("UIRaycaster: " + t.FullName);
+                    foreach (var mi in t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+                    {
+                        if (!mi.Name.StartsWith("Raycast", StringComparison.Ordinal)) continue;
+                        var ps = mi.GetParameters();
+                        var sig = new StringBuilder();
+                        foreach (var p in ps)
+                        {
+                            if (sig.Length > 0) sig.Append(", ");
+                            sig.Append(p.ParameterType.Name);
+                        }
+                        sb.AppendLine($"  {mi.Name}({sig}) -> {mi.ReturnType.Name} generic={mi.IsGenericMethodDefinition}");
+                    }
+                }
+            }
+            catch (Exception ex) { sb.AppendLine("UIRaycaster dump error: " + ex.Message); }
+            BuildArchitectPlugin.Log.LogInfo(sb.ToString());
         }
 
         private static void RefreshCaches(GearState st)
@@ -364,7 +454,7 @@ namespace MycopunkBuildArchitect
                 var all = solver.CollectCandidates();
                 return solver.PickForLayout(all);
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 BuildArchitectPlugin.Log.LogError("Scan failed: " + ex);
                 return new List<UpgradeInstance>();
@@ -399,7 +489,6 @@ namespace MycopunkBuildArchitect
                     st.Status = "Cannot generate: gear or equip slots unavailable.";
                     yield break;
                 }
-
                 bool ouroMode = BuildArchitectPlugin.IsOuroWindow(win);
                 var required = BuildRequiredSet(st.Marks);
                 var excluded = BuildExcludedSet(st.Marks);
@@ -414,7 +503,7 @@ namespace MycopunkBuildArchitect
                     object? cur = null;
                     bool has;
                     try { has = routine.MoveNext(); if (has) cur = routine.Current; }
-                    catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Generate: " + ex); break; }
+                    catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Generate: " + ex); break; }
                     if (!has) break;
                     yield return cur;
                 }
@@ -439,11 +528,9 @@ namespace MycopunkBuildArchitect
                     st.Status = "Cannot apply: gear or equip slots unavailable.";
                     yield break;
                 }
-
                 bool ouroMode = BuildArchitectPlugin.IsOuroWindow(win);
                 bool result = false;
                 IEnumerator? routine = null;
-
                 try
                 {
                     var solver = new LayoutSolver(gear, slots,
@@ -451,8 +538,7 @@ namespace MycopunkBuildArchitect
                         _ignoreRotationLocks, ouroMode);
                     routine = solver.Apply(v, r => result = r);
                 }
-                catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply init: " + ex); }
-
+                catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Apply init: " + ex); }
                 if (routine != null)
                 {
                     while (true)
@@ -460,12 +546,11 @@ namespace MycopunkBuildArchitect
                         object? cur = null;
                         bool has;
                         try { has = routine.MoveNext(); if (has) cur = routine.Current; }
-                        catch (System.Exception ex) { BuildArchitectPlugin.Log.LogError("Apply step: " + ex); break; }
+                        catch (Exception ex) { BuildArchitectPlugin.Log.LogError("Apply step: " + ex); break; }
                         if (!has) break;
                         yield return cur;
                     }
                 }
-
                 st.Status = result
                     ? ("Applied " + v.Name + $" — {v.PlacedCount}/{v.TotalCount} placed.")
                     : "Apply failed.";
